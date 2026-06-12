@@ -130,6 +130,10 @@ export default function HostPage() {
       setError(null);
       setWsStatus("connecting");
 
+      if (session?.status === "ended") {
+        await updateStatus("live");
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
@@ -165,9 +169,9 @@ export default function HostPage() {
         const recorder = new MediaRecorder(stream, { mimeType });
         mediaRecorderRef.current = recorder;
 
-        recorder.ondataavailable = (e) => {
+        recorder.ondataavailable = async (e) => {
           if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) {
-            ws.send(e.data);
+            ws.send(await e.data.arrayBuffer());
           }
         };
 
@@ -282,10 +286,9 @@ export default function HostPage() {
             {!recording ? (
               <button
                 onClick={startRecording}
-                disabled={session.status === "ended"}
                 className="w-full rounded-lg bg-red-500 py-3 font-semibold text-white hover:bg-red-600 disabled:opacity-50"
               >
-                Start Recording
+                {session.status === "ended" ? "Restart Recording" : "Start Recording"}
               </button>
             ) : (
               <button

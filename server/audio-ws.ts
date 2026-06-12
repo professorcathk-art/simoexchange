@@ -17,9 +17,47 @@ interface ActiveConnection {
   sessionId: string;
   sourceLang: LangCode;
   targetLang: LangCode;
+  audioQueue: Buffer[];
+  deepgramReady: boolean;
 }
 
 const activeConnections = new Map<WebSocket, ActiveConnection>();
+
+function toBuffer(data: WebSocket.RawData): Buffer {
+  if (Buffer.isBuffer(data)) return data;
+  if (data instanceof ArrayBuffer) return Buffer.from(data);
+  if (Array.isArray(data)) return Buffer.concat(data);
+  return Buffer.from(data as Uint8Array);
+}
+
+function flushAudioQueue(conn: ActiveConnection): void {
+  if (!conn.deepgramReady || !conn.deepgramSocket) return;
+  for (const chunk of conn.audioQueue) {
+    try {
+      conn.deepgramSocket.sendMedia(chunk);
+    } catch (err) {
+      console.error("Error flushing audio chunk:", err);
+    }
+  }
+  conn.audioQueue.length = 0;
+}
+
+function handleAudioChunk(ws: WebSocket, data: WebSocket.RawData): void {
+  const conn = activeConnections.get(ws);
+  if (!conn) return;
+
+  const buf = toBuffer(data);
+  if (!conn.deepgramReady || !conn.deepgramSocket) {
+    conn.audioQueue.push(buf);
+    return;
+  }
+
+  try {
+    conn.deepgramSocket.sendMedia(buf);
+  } catch (err) {
+    console.error("Error sending audio to Deepgram:", err);
+  }
+}
 
 async function processFinalTranscript(
   sessionId: string,
@@ -90,18 +128,30 @@ export async function setupAudioWebSocket(
     return;
   }
 
+  const conn: ActiveConnection = {
+    deepgramSocket: null,
+    keepaliveInterval: null,
+    sessionId,
+    sourceLang,
+    targetLang,
+    audioQueue: [],
+    deepgramReady: false,
+  };
+  activeConnections.set(ws, conn);
+
+  ws.on("message", (data) => handleAudioChunk(ws, data));
+  ws.on("close", () => cleanupConnection(ws));
+  ws.on("error", (err) => {
+    console.error("WebSocket error:", err);
+    cleanupConnection(ws);
+  });
+
   const deepgram = new DeepgramClient({
     apiKey: process.env.DEEPGRAM_API_KEY,
   });
 
-  let deepgramSocket: Awaited<
-    ReturnType<DeepgramClient["listen"]["v1"]["connect"]>
-  > | null = null;
-
   try {
-    // WebM/Opus from MediaRecorder is containerized — omit encoding/sample_rate
-    // so Deepgram reads headers from the stream (see Deepgram docs).
-    deepgramSocket = await deepgram.listen.v1.connect({
+    const deepgramSocket = await deepgram.listen.v1.connect({
       model: "nova-3",
       language: sourceLang,
       smart_format: "true",
@@ -112,21 +162,15 @@ export async function setupAudioWebSocket(
       Authorization: `Token ${process.env.DEEPGRAM_API_KEY}`,
     });
 
-    const keepaliveInterval = setInterval(() => {
+    conn.deepgramSocket = deepgramSocket;
+
+    conn.keepaliveInterval = setInterval(() => {
       try {
-        deepgramSocket?.sendKeepAlive({ type: "KeepAlive" });
+        deepgramSocket.sendKeepAlive({ type: "KeepAlive" });
       } catch {
         // ignore keepalive errors
       }
     }, 8000);
-
-    activeConnections.set(ws, {
-      deepgramSocket,
-      keepaliveInterval,
-      sessionId,
-      sourceLang,
-      targetLang,
-    });
 
     deepgramSocket.on("message", (data) => {
       if (data.type !== "Results") return;
@@ -155,30 +199,14 @@ export async function setupAudioWebSocket(
     });
 
     await deepgramSocket.waitForOpen();
+    conn.deepgramReady = true;
+    flushAudioQueue(conn);
+    console.log(`[audio-ws] Deepgram ready for session ${sessionId}`);
   } catch (err) {
     console.error("Deepgram connection error:", err);
+    cleanupConnection(ws);
     ws.close(1011, "Failed to connect to Deepgram");
-    return;
   }
-
-  ws.on("message", (data) => {
-    const conn = activeConnections.get(ws);
-    if (!conn?.deepgramSocket) return;
-    try {
-      conn.deepgramSocket.sendMedia(data as Buffer);
-    } catch (err) {
-      console.error("Error sending audio to Deepgram:", err);
-    }
-  });
-
-  ws.on("close", () => {
-    cleanupConnection(ws);
-  });
-
-  ws.on("error", (err) => {
-    console.error("WebSocket error:", err);
-    cleanupConnection(ws);
-  });
 }
 
 function cleanupConnection(ws: WebSocket): void {
