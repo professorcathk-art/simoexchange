@@ -4,10 +4,12 @@
   "private": true,
   "scripts": {
     "dev": "tsx server.ts",
+    "dev:clean": "lsof -ti:3000 | xargs kill -9 2>/dev/null; tsx server.ts",
     "build": "next build",
     "start": "NODE_ENV=production tsx server.ts",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "health-check": "tsx scripts/health-check.ts"
   },
   "dependencies": {
     "@deepgram/sdk": "^5.4.0",

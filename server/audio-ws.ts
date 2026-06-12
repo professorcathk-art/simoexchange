@@ -19,6 +19,7 @@ interface ActiveConnection {
   targetLang: LangCode;
   audioQueue: Buffer[];
   deepgramReady: boolean;
+  lastProcessedText: string;
 }
 
 const activeConnections = new Map<WebSocket, ActiveConnection>();
@@ -136,6 +137,7 @@ export async function setupAudioWebSocket(
     targetLang,
     audioQueue: [],
     deepgramReady: false,
+    lastProcessedText: "",
   };
   activeConnections.set(ws, conn);
 
@@ -179,12 +181,14 @@ export async function setupAudioWebSocket(
         result.channel?.alternatives?.[0]?.transcript?.trim() ?? "";
       if (!transcript) return;
 
-      if (result.is_final) {
+      const isFinal = result.speech_final || result.is_final;
+      if (isFinal && transcript !== conn.lastProcessedText) {
+        conn.lastProcessedText = transcript;
         console.log(`[deepgram] final: ${transcript}`);
         processFinalTranscript(sessionId, transcript, sourceLang, targetLang).catch(
           (err) => console.error("Process final error:", err)
         );
-      } else {
+      } else if (!isFinal) {
         console.log(`[deepgram] interim: ${transcript}`);
         emitToSession(sessionId, "transcript_interim", {
           sessionId,
@@ -198,6 +202,7 @@ export async function setupAudioWebSocket(
       console.error("Deepgram error:", err);
     });
 
+    deepgramSocket.connect();
     await deepgramSocket.waitForOpen();
     conn.deepgramReady = true;
     flushAudioQueue(conn);

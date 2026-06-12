@@ -72,7 +72,20 @@ app.prepare().then(() => {
     }
   });
 
-  httpServer.listen(port, () => {
-    console.log(`> LiveTranslate ready on http://${hostname}:${port}`);
-  });
+  httpServer
+    .listen(port, () => {
+      console.log(`> LiveTranslate ready on http://${hostname}:${port}`);
+    })
+    .on("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "EADDRINUSE") {
+        console.error(
+          `\nPort ${port} is already in use. Stop the other server first:\n  lsof -ti:${port} | xargs kill -9\n  npm run dev\n`
+        );
+        process.exit(1);
+      }
+      throw err;
+    });
+}).catch((err) => {
+  console.error("Failed to start server:", err);
+  process.exit(1);
 });

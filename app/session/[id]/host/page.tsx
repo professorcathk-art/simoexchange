@@ -110,6 +110,14 @@ export default function HostPage() {
   }, [sessionId]);
 
   useEffect(() => {
+    return () => {
+      mediaRecorderRef.current?.stop();
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      wsRef.current?.close();
+    };
+  }, []);
+
+  useEffect(() => {
     segmentsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [segments, interimText]);
 
