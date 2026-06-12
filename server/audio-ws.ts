@@ -99,6 +99,8 @@ export async function setupAudioWebSocket(
   > | null = null;
 
   try {
+    // WebM/Opus from MediaRecorder is containerized — omit encoding/sample_rate
+    // so Deepgram reads headers from the stream (see Deepgram docs).
     deepgramSocket = await deepgram.listen.v1.connect({
       model: "nova-3",
       language: sourceLang,
@@ -107,7 +109,6 @@ export async function setupAudioWebSocket(
       interim_results: "true",
       utterance_end_ms: "1000",
       vad_events: "true",
-      encoding: "opus",
       Authorization: `Token ${process.env.DEEPGRAM_API_KEY}`,
     });
 
@@ -135,10 +136,12 @@ export async function setupAudioWebSocket(
       if (!transcript) return;
 
       if (result.is_final) {
+        console.log(`[deepgram] final: ${transcript}`);
         processFinalTranscript(sessionId, transcript, sourceLang, targetLang).catch(
           (err) => console.error("Process final error:", err)
         );
       } else {
+        console.log(`[deepgram] interim: ${transcript}`);
         emitToSession(sessionId, "transcript_interim", {
           sessionId,
           text: transcript,

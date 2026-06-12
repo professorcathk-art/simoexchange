@@ -16,5 +16,11 @@ export function getSocket(): Socket {
 }
 
 export function joinSession(sessionId: string): void {
-  getSocket().emit("join_session", sessionId);
+  const socket = getSocket();
+  const doJoin = () => socket.emit("join_session", sessionId);
+  if (socket.connected) {
+    doJoin();
+  } else {
+    socket.once("connect", doJoin);
+  }
 }

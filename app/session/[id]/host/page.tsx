@@ -19,12 +19,14 @@ export default function HostPage() {
   const [segments, setSegments] = useState<Segment[]>([]);
   const [interimText, setInterimText] = useState("");
   const [recording, setRecording] = useState(false);
+  const [wsStatus, setWsStatus] = useState<"idle" | "connecting" | "connected" | "error">("idle");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const recordingRef = useRef(false);
   const segmentsEndRef = useRef<HTMLDivElement>(null);
   const { play } = useAudioPlayer();
 
@@ -125,19 +127,40 @@ export default function HostPage() {
 
   const startRecording = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setError(null);
+      setWsStatus("connecting");
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          channelCount: 1,
+        },
+      });
       streamRef.current = stream;
 
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(
         `${protocol}//${window.location.host}/api/ws/audio?sessionId=${sessionId}`
       );
+      ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 
       ws.onopen = () => {
+        setWsStatus("connected");
+
         const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
           ? "audio/webm;codecs=opus"
-          : "audio/webm";
+          : MediaRecorder.isTypeSupported("audio/webm")
+            ? "audio/webm"
+            : "";
+
+        if (!mimeType) {
+          setError("Browser does not support WebM audio recording");
+          setWsStatus("error");
+          ws.close();
+          return;
+        }
 
         const recorder = new MediaRecorder(stream, { mimeType });
         mediaRecorderRef.current = recorder;
@@ -149,12 +172,28 @@ export default function HostPage() {
         };
 
         recorder.start(250);
+        recordingRef.current = true;
         setRecording(true);
         updateStatus("live");
       };
 
-      ws.onerror = () => setError("WebSocket connection failed");
+      ws.onerror = () => {
+        setWsStatus("error");
+        setError("WebSocket connection failed");
+      };
+
+      ws.onclose = (event) => {
+        if (event.code !== 1000 && recordingRef.current) {
+          setWsStatus("error");
+          setError(
+            event.reason || `Audio connection closed (code ${event.code})`
+          );
+        }
+        recordingRef.current = false;
+        setRecording(false);
+      };
     } catch (err) {
+      setWsStatus("error");
       setError(
         err instanceof Error ? err.message : "Microphone access denied"
       );
@@ -168,7 +207,9 @@ export default function HostPage() {
     streamRef.current = null;
     wsRef.current?.close();
     wsRef.current = null;
+    recordingRef.current = false;
     setRecording(false);
+    setWsStatus("idle");
     setInterimText("");
   };
 
@@ -213,6 +254,29 @@ export default function HostPage() {
               {getLanguagePair(session.source_lang, session.target_lang)}
             </p>
           </div>
+
+          {recording && (
+            <p className="text-xs text-gray-500">
+              Audio:{" "}
+              <span
+                className={
+                  wsStatus === "connected"
+                    ? "text-green-400"
+                    : wsStatus === "error"
+                      ? "text-red-400"
+                      : "text-yellow-400"
+                }
+              >
+                {wsStatus === "connected"
+                  ? "Connected — speak now"
+                  : wsStatus === "connecting"
+                    ? "Connecting..."
+                    : wsStatus === "error"
+                      ? "Error"
+                      : "Idle"}
+              </span>
+            </p>
+          )}
 
           <div className="space-y-3">
             {!recording ? (

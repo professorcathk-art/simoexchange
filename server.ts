@@ -31,6 +31,8 @@ const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
 app.prepare().then(() => {
+  const upgradeHandler = app.getUpgradeHandler();
+
   const httpServer = createServer((req, res) => {
     const parsedUrl = parse(req.url!, true);
     handle(req, res, parsedUrl);
@@ -59,13 +61,14 @@ app.prepare().then(() => {
     if (pathname === "/api/ws/audio") {
       wss.handleUpgrade(request, socket, head, (ws) => {
         const sessionId = (query.sessionId as string) || "";
+        console.log(`[audio-ws] Client connected for session ${sessionId}`);
         setupAudioWebSocket(ws, sessionId).catch((err) => {
           console.error("Audio WS setup error:", err);
           ws.close(1011, "Setup failed");
         });
       });
     } else {
-      socket.destroy();
+      upgradeHandler(request, socket, head);
     }
   });
 
