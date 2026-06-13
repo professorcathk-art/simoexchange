@@ -21,10 +21,12 @@ export default function ListenPage() {
   const [error, setError] = useState<string | null>(null);
 
   const segmentsEndRef = useRef<HTMLDivElement>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
 
   const {
     audioOn,
     audioUnlocked,
+    unlocking,
     isPlaying,
     playError,
     bindAudioElement,
@@ -33,8 +35,12 @@ export default function ListenPage() {
     queueAudio,
   } = useListenerAudio();
 
-  const setAudioRef = (el: HTMLAudioElement | null) => {
-    bindAudioElement(el);
+  useEffect(() => {
+    bindAudioElement(audioRef.current);
+  }, [bindAudioElement, loading]);
+
+  const handleEnableAudio = () => {
+    enableAudio();
   };
 
   useEffect(() => {
@@ -149,27 +155,38 @@ export default function ListenPage() {
 
   return (
     <main className="relative min-h-screen bg-background">
-      {/* Persistent DOM audio element — required for iOS Safari playback */}
+      {/* Must stay in DOM and NOT use display:none — iOS blocks play() otherwise */}
       <audio
-        ref={setAudioRef}
+        ref={audioRef}
         playsInline
         preload="auto"
-        className="hidden"
+        className="pointer-events-none fixed left-0 top-0 h-px w-px opacity-0"
         aria-hidden
       />
 
       {!audioUnlocked && (
-        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-black/80 px-6">
+        <div
+          className="fixed inset-0 z-[100] flex flex-col items-center justify-center gap-4 bg-black/90 px-6"
+          style={{ touchAction: "manipulation" }}
+        >
           <button
             type="button"
-            onClick={() => void enableAudio()}
-            className="rounded-2xl bg-accent px-8 py-4 text-lg font-semibold text-black"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              handleEnableAudio();
+            }}
+            disabled={unlocking}
+            className="min-h-[52px] min-w-[240px] cursor-pointer rounded-2xl bg-accent px-8 py-4 text-lg font-semibold text-black active:scale-95 disabled:opacity-70"
+            style={{ touchAction: "manipulation", WebkitTapHighlightColor: "transparent" }}
           >
-            Tap to enable audio
+            {unlocking ? "Enabling..." : "Tap to enable audio"}
           </button>
           <p className="max-w-xs text-center text-sm text-gray-400">
             Required on mobile to play translated speech in real time
           </p>
+          {playError && (
+            <p className="max-w-xs text-center text-sm text-red-400">{playError}</p>
+          )}
         </div>
       )}
 

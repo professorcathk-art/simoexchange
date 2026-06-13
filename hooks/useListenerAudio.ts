@@ -1,18 +1,24 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { SILENT_MP3_DATA_URL, base64ToBlobUrl } from "@/lib/audio-playback";
+import {
+  base64ToBlobUrl,
+  unlockWithAudioContext,
+  unlockWithAudioElement,
+} from "@/lib/audio-playback";
 
 export function useListenerAudio() {
   const audioElRef = useRef<HTMLAudioElement | null>(null);
   const queueRef = useRef<string[]>([]);
   const playingRef = useRef(false);
   const unlockedRef = useRef(false);
+  const unlockingRef = useRef(false);
   const audioOnRef = useRef(true);
   const blobUrlsRef = useRef<Set<string>>(new Set());
 
   const [audioOn, setAudioOn] = useState(true);
   const [audioUnlocked, setAudioUnlocked] = useState(false);
+  const [unlocking, setUnlocking] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playError, setPlayError] = useState<string | null>(null);
 
@@ -50,7 +56,7 @@ export function useListenerAudio() {
       setIsPlaying(false);
       setPlayError("Tap enable audio again if playback stopped");
       revokeUrl(url);
-      playNext();
+      void playNext();
     }
   }, [revokeUrl]);
 
@@ -63,51 +69,40 @@ export function useListenerAudio() {
     [playNext]
   );
 
-  const bindAudioElement = useCallback(
-    (el: HTMLAudioElement | null) => {
-      audioElRef.current = el;
-      if (!el) return;
+  const bindAudioElement = useCallback((el: HTMLAudioElement | null) => {
+    audioElRef.current = el;
+  }, []);
 
-      const onEnded = () => {
-        if (el.src.startsWith("blob:")) revokeUrl(el.src);
-        playingRef.current = false;
-        setIsPlaying(false);
-        void playNext();
-      };
-
-      const onError = () => {
-        playingRef.current = false;
-        setIsPlaying(false);
-        if (el.src.startsWith("blob:")) revokeUrl(el.src);
-        void playNext();
-      };
-
-      el.addEventListener("ended", onEnded);
-      el.addEventListener("error", onError);
-    },
-    [playNext, revokeUrl]
-  );
-
-  const enableAudio = useCallback(async () => {
+  /**
+   * Must be called synchronously from pointer/touch handler (not async).
+   * iOS Safari only allows play() inside the direct user-gesture call stack.
+   */
+  const enableAudio = useCallback(() => {
     const audio = audioElRef.current;
-    if (!audio) return;
+    if (!audio || unlockingRef.current || unlockedRef.current) return;
 
-    audio.src = SILENT_MP3_DATA_URL;
-    audio.volume = 0.01;
-    try {
-      await audio.play();
-      audio.pause();
-      audio.volume = 1;
-      unlockedRef.current = true;
-      audioOnRef.current = true;
-      setAudioUnlocked(true);
-      setAudioOn(true);
-      setPlayError(null);
-      void playNext();
-    } catch (err) {
-      console.error("Audio unlock failed:", err);
-      setPlayError("Could not unlock audio — try tapping again");
-    }
+    unlockingRef.current = true;
+    setUnlocking(true);
+    setPlayError(null);
+
+    unlockWithAudioElement(audio)
+      .catch(() => unlockWithAudioContext())
+      .then(() => {
+        unlockedRef.current = true;
+        audioOnRef.current = true;
+        setAudioUnlocked(true);
+        setAudioOn(true);
+        setPlayError(null);
+        void playNext();
+      })
+      .catch((err) => {
+        console.error("Audio unlock failed:", err);
+        setPlayError("Could not unlock audio — tap the button again");
+      })
+      .finally(() => {
+        unlockingRef.current = false;
+        setUnlocking(false);
+      });
   }, [playNext]);
 
   const toggleAudio = useCallback(() => {
@@ -125,6 +120,32 @@ export function useListenerAudio() {
   }, [playNext]);
 
   useEffect(() => {
+    const audio = audioElRef.current;
+    if (!audio) return;
+
+    const onEnded = () => {
+      if (audio.src.startsWith("blob:")) revokeUrl(audio.src);
+      playingRef.current = false;
+      setIsPlaying(false);
+      void playNext();
+    };
+
+    const onError = () => {
+      playingRef.current = false;
+      setIsPlaying(false);
+      if (audio.src.startsWith("blob:")) revokeUrl(audio.src);
+      void playNext();
+    };
+
+    audio.addEventListener("ended", onEnded);
+    audio.addEventListener("error", onError);
+    return () => {
+      audio.removeEventListener("ended", onEnded);
+      audio.removeEventListener("error", onError);
+    };
+  }, [playNext, revokeUrl, audioUnlocked]);
+
+  useEffect(() => {
     return () => {
       Array.from(blobUrlsRef.current).forEach((url) => URL.revokeObjectURL(url));
       blobUrlsRef.current.clear();
@@ -135,6 +156,7 @@ export function useListenerAudio() {
   return {
     audioOn,
     audioUnlocked,
+    unlocking,
     isPlaying,
     playError,
     bindAudioElement,
