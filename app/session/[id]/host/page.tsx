@@ -266,12 +266,9 @@ export default function HostPage() {
           <ApiUsagePanel usage={apiUsage} lowPowerMode={lowPowerMode} />
           <QRCodeDisplay sessionId={sessionId} />
 
-          <Link
-            href={`/session/${sessionId}/audio-out`}
-            className="block text-center text-sm text-accent hover:underline"
-          >
-            Open Audio Output (for Zoom)
-          </Link>
+          <p className="text-center text-xs text-gray-500">
+            Audience scans QR or opens listener link — transcript + auto-play audio on one page
+          </p>
         </div>
 
         <div className="flex-1 rounded-xl border border-white/10 bg-card p-6">

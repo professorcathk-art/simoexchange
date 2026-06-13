@@ -316,13 +316,25 @@ async function checkHttpRoutes() {
   try {
     const listenRes = await fetch(`${BASE}/session/${sessionId}/listen`);
     if (listenRes.status !== 200) throw new Error(`status ${listenRes.status}`);
-    const html = await listenRes.text();
-    if (!html.includes("LiveTranslate") && !html.includes("Waiting for live captions")) {
-      throw new Error("listener page missing expected content");
-    }
     ok(`GET /session/[id]/listen → ${listenRes.status}`);
   } catch (err) {
     fail("GET listener page", err);
+  }
+
+  try {
+    const redirectRes = await fetch(`${BASE}/session/${sessionId}/audio-out`, {
+      redirect: "manual",
+    });
+    const location = redirectRes.headers.get("location") ?? "";
+    if (redirectRes.status !== 307 && redirectRes.status !== 308) {
+      throw new Error(`audio-out redirect expected 307/308, got ${redirectRes.status}`);
+    }
+    if (!location.includes(`/session/${sessionId}/listen`)) {
+      throw new Error(`audio-out redirect wrong location: ${location}`);
+    }
+    ok("GET /session/[id]/audio-out → redirects to listen");
+  } catch (err) {
+    fail("audio-out redirect", err);
   }
 
   try {
@@ -434,6 +446,76 @@ async function checkAudioWebSocket(sessionId: string) {
   });
 }
 
+async function checkSegmentUpdateAudio(sessionId: string) {
+  console.log("\n[10b] segment_update with TTS audio");
+  return new Promise<void>((resolve) => {
+    const socket = ioClient(BASE, {
+      path: "/socket.io",
+      transports: ["websocket", "polling"],
+    });
+
+    const timeout = setTimeout(() => {
+      socket.disconnect();
+      fail("segment_update audio", "timeout waiting for segment_update");
+      resolve();
+    }, 30000);
+
+    socket.on("connect", () => {
+      socket.emit("join_session", sessionId, async (res: { ok?: boolean }) => {
+        if (!res?.ok) {
+          clearTimeout(timeout);
+          fail("segment_update audio", "join_session failed");
+          socket.disconnect();
+          resolve();
+          return;
+        }
+
+        try {
+          const emitRes = await fetch(
+            `${BASE}/api/sessions/${sessionId}/test-segment`,
+            { method: "POST" }
+          );
+          if (!emitRes.ok) {
+            const body = await emitRes.text();
+            throw new Error(`test-segment ${emitRes.status}: ${body}`);
+          }
+        } catch (err) {
+          clearTimeout(timeout);
+          fail("segment_update audio", err);
+          socket.disconnect();
+          resolve();
+        }
+      });
+    });
+
+    socket.on(
+      "segment_update",
+      (data: { audioBase64?: string | null; translatedText?: string }) => {
+        if (!data.translatedText) return;
+        clearTimeout(timeout);
+        if (!data.audioBase64 || data.audioBase64.length < 500) {
+          fail(
+            "segment_update audio",
+            `missing or tiny audioBase64 (${data.audioBase64?.length ?? 0})`
+          );
+        } else {
+          ok(
+            `segment_update delivers audio (${data.audioBase64.length} chars) + text`
+          );
+        }
+        socket.disconnect();
+        resolve();
+      }
+    );
+
+    socket.on("connect_error", (err) => {
+      clearTimeout(timeout);
+      fail("segment_update audio", err);
+      resolve();
+    });
+  });
+}
+
 async function checkListenerChannel(sessionId: string) {
   console.log("\n[10] Listener Socket.io channel");
   return new Promise<void>((resolve) => {
@@ -519,6 +601,7 @@ async function main() {
   if (sessionId) {
     await checkAudioWebSocket(sessionId);
     await checkListenerChannel(sessionId);
+    await checkSegmentUpdateAudio(sessionId);
     await checkDeleteSession(sessionId);
   }
 

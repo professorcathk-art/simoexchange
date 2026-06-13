@@ -6,7 +6,7 @@ import type { Session, TranscriptSegment as Segment } from "@/types";
 import { LANGUAGES } from "@/lib/constants";
 import { isSpeakableText } from "@/lib/speech-synthesis";
 import { getSocket, joinSession } from "@/lib/socket-client";
-import { useListenerSpeech } from "@/hooks/useListenerSpeech";
+import { useTranslationPlayback } from "@/hooks/useTranslationPlayback";
 import StatusBadge from "@/components/StatusBadge";
 import TranscriptSegment, { InterimTranscript } from "@/components/TranscriptSegment";
 
@@ -20,32 +20,29 @@ export default function ListenPage() {
   const [interimSpeakerId, setInterimSpeakerId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showZoomHelp, setShowZoomHelp] = useState(false);
 
   const segmentsEndRef = useRef<HTMLDivElement>(null);
-  const spokenIdsRef = useRef<Set<string>>(new Set());
+  const registerSegmentRef = useRef<
+    (id: string, text: string | null, b64: string | null) => void
+  >(() => {});
 
   const targetLangCode = session?.target_lang ?? "zh";
 
   const {
-    speechOn,
-    speechUnlocked,
-    isSpeaking,
-    speechSupported,
-    enableSpeech,
-    speakText,
-    replayText,
-    toggleSpeech,
-  } = useListenerSpeech(targetLangCode);
+    unlocked,
+    audioOn,
+    isPlaying,
+    volume,
+    lastPlaySource,
+    setVolume,
+    enableAudio,
+    registerSegment,
+    replaySegment,
+    toggleAudio,
+  } = useTranslationPlayback(targetLangCode);
 
-  const speakSegment = useCallback(
-    (segmentId: string, translatedText: string | null) => {
-      if (!speechUnlocked || !isSpeakableText(translatedText)) return;
-      if (spokenIdsRef.current.has(segmentId)) return;
-      spokenIdsRef.current.add(segmentId);
-      speakText(translatedText!);
-    },
-    [speechUnlocked, speakText]
-  );
+  registerSegmentRef.current = registerSegment;
 
   useEffect(() => {
     Promise.all([
@@ -113,7 +110,11 @@ export default function ListenPage() {
             : s
         )
       );
-      speakSegment(data.segmentId, data.translatedText);
+      registerSegmentRef.current(
+        data.segmentId,
+        data.translatedText,
+        data.audioBase64
+      );
     };
 
     const onStatus = (data: { status: string }) => {
@@ -133,14 +134,21 @@ export default function ListenPage() {
       socket.off("segment_update", onSegmentUpdate);
       socket.off("session_status", onStatus);
     };
-  }, [sessionId, speakSegment]);
+  }, [sessionId]);
+
+  const drainSegments = useCallback(() => {
+    const ordered = [...segments]
+      .sort((a, b) => a.seq_no - b.seq_no)
+      .filter((s) => s.translated_text || s.audio_base64);
+    for (const seg of ordered) {
+      registerSegment(seg.id, seg.translated_text, seg.audio_base64);
+    }
+  }, [segments, registerSegment]);
 
   useEffect(() => {
-    if (!speechUnlocked) return;
-    for (const seg of segments) {
-      speakSegment(seg.id, seg.translated_text);
-    }
-  }, [speechUnlocked, segments, speakSegment]);
+    if (!unlocked) return;
+    drainSegments();
+  }, [unlocked, segments, drainSegments]);
 
   useEffect(() => {
     segmentsEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -166,7 +174,7 @@ export default function ListenPage() {
 
       {!loading && session && (
         <>
-          {!speechUnlocked && (
+          {!unlocked && (
             <div
               className="fixed inset-0 z-[100] flex flex-col items-center justify-center gap-4 bg-black/90 px-6"
               style={{ touchAction: "manipulation" }}
@@ -176,28 +184,26 @@ export default function ListenPage() {
                 onTouchStart={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  enableSpeech();
+                  enableAudio();
+                  drainSegments();
                 }}
                 onClick={(e) => {
                   e.stopPropagation();
-                  enableSpeech();
+                  enableAudio();
+                  drainSegments();
                 }}
-                className="min-h-[52px] min-w-[240px] cursor-pointer rounded-2xl bg-accent px-8 py-4 text-lg font-semibold text-black active:scale-95"
+                className="min-h-[52px] min-w-[260px] cursor-pointer rounded-2xl bg-accent px-8 py-4 text-lg font-semibold text-black active:scale-95"
                 style={{
                   touchAction: "manipulation",
                   WebkitTapHighlightColor: "transparent",
                 }}
               >
-                Tap to enable speech
+                Tap to start listening
               </button>
-              <p className="max-w-xs text-center text-sm text-gray-400">
-                Reads each translation aloud using your device voice
+              <p className="max-w-sm text-center text-sm text-gray-400">
+                Required once on mobile. Translations will play automatically like
+                a simultaneous interpreter.
               </p>
-              {!speechSupported && (
-                <p className="max-w-xs text-center text-sm text-amber-400">
-                  Speech not supported in this browser — try Safari or Chrome
-                </p>
-              )}
             </div>
           )}
 
@@ -225,21 +231,51 @@ export default function ListenPage() {
 
             <button
               type="button"
-              onClick={toggleSpeech}
+              onClick={toggleAudio}
               className={`mb-2 w-full rounded-lg py-3 text-sm font-medium transition-colors ${
-                speechOn
+                audioOn
                   ? "bg-accent/20 text-accent"
                   : "border border-white/10 text-gray-400"
               }`}
             >
-              {speechOn ? "🔊 Speech ON" : "🔇 Speech OFF"}
+              {audioOn ? "🔊 Auto-play ON" : "🔇 Auto-play OFF"}
             </button>
-            {speechUnlocked && (
-              <p className="mb-6 text-center text-xs text-gray-500">
-                {isSpeaking
-                  ? "Speaking translation..."
-                  : "Speech ready — new translations read aloud automatically"}
+
+            {unlocked && (
+              <p className="mb-3 text-center text-xs text-gray-500">
+                {isPlaying
+                  ? `Playing translation${lastPlaySource === "speech" ? " (device voice)" : ""}...`
+                  : "Ready — new translations play automatically"}
               </p>
+            )}
+
+            <div className="mb-6">
+              <label className="mb-1 block text-xs text-gray-500">Volume</label>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={volume}
+                onChange={(e) => setVolume(parseFloat(e.target.value))}
+                className="w-full accent-accent"
+              />
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowZoomHelp((v) => !v)}
+              className="mb-4 w-full rounded-lg border border-white/10 py-2 text-xs text-gray-400 hover:text-white"
+            >
+              {showZoomHelp ? "Hide" : "Show"} Zoom / virtual cable setup
+            </button>
+
+            {showZoomHelp && (
+              <div className="mb-6 rounded-lg border border-white/10 bg-white/5 p-4 text-xs leading-relaxed text-gray-400">
+                Route this page&apos;s audio into Zoom: use BlackHole (macOS) or
+                VB-Cable (Windows) as system output, then select that device as
+                your Zoom microphone. Keep this page open with auto-play enabled.
+              </div>
             )}
 
             <div className="space-y-3 pb-8">
@@ -248,8 +284,16 @@ export default function ListenPage() {
                   key={seg.id}
                   segment={seg}
                   variant="listener"
-                  showPlayButton={isSpeakableText(seg.translated_text)}
-                  onPlay={replayText}
+                  showPlayButton={
+                    isSpeakableText(seg.translated_text) || !!seg.audio_base64
+                  }
+                  onPlay={() =>
+                    replaySegment(
+                      seg.id,
+                      seg.translated_text,
+                      seg.audio_base64
+                    )
+                  }
                 />
               ))}
 

@@ -64,10 +64,10 @@ export default function TranscriptSegment({
         <p className="text-xl text-white">
           {segment.translated_text || "Translating..."}
         </p>
-        {showPlayButton && segment.translated_text && onPlay && (
+        {showPlayButton && onPlay && (
           <button
             type="button"
-            onClick={() => onPlay(segment.translated_text!)}
+            onClick={() => onPlay(segment.translated_text ?? segment.audio_base64 ?? "")}
             className="shrink-0 rounded-lg border border-accent/30 bg-accent/10 px-3 py-2 text-sm text-accent active:scale-95"
             aria-label="Replay translation speech"
           >
