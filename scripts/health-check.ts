@@ -13,6 +13,7 @@ import { createClient } from "@supabase/supabase-js";
 import { buildListenerUrl, ensureUrlScheme } from "../lib/qrcode";
 import { resolveSourceLanguage } from "../lib/detect-language";
 import { translate, isMetaTranslation } from "../lib/translate";
+import { generateTTS } from "../lib/tts";
 
 loadEnvConfig(process.cwd());
 
@@ -204,6 +205,21 @@ async function checkTranslationQuality() {
     ok(`translate mandarin fragment → "${mandarin}"`);
   } catch (err) {
     fail("Translation quality", err);
+  }
+}
+
+async function checkTtsPipeline() {
+  console.log("\n[5b] TTS pipeline (translate → speech audio)");
+  try {
+    const translated = await translate("Hello, this is a test.", "zh", "en");
+    if (!translated) throw new Error("empty translation");
+    const b64 = await generateTTS(translated, "zh");
+    if (!b64 || b64.length < 500) {
+      throw new Error(`TTS base64 too small: ${b64?.length ?? 0}`);
+    }
+    ok(`TTS pipeline: "${translated}" → ${b64.length} chars base64`);
+  } catch (err) {
+    fail("TTS pipeline", err);
   }
 }
 
@@ -495,6 +511,7 @@ async function main() {
   await checkAiml();
   await checkTranslationQuality();
   await checkElevenLabs();
+  await checkTtsPipeline();
 
   const sessionId = await checkHttpRoutes();
   await checkSocketIo();
