@@ -13,13 +13,11 @@ export default function QRCodeDisplay({ sessionId }: QRCodeDisplayProps) {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    const url = `${window.location.origin}/session/${sessionId}/listen`;
-    setListenerUrl(url);
-
     fetch(`/api/sessions/${sessionId}/qrcode`)
       .then((res) => res.json())
       .then((data) => {
         if (data.qrCode) setQrDataUrl(data.qrCode);
+        if (data.listenerUrl) setListenerUrl(data.listenerUrl);
       })
       .catch(console.error);
   }, [sessionId]);

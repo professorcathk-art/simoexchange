@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateQRCode } from "@/lib/qrcode";
+import { generateQRCode, resolveAppUrl } from "@/lib/qrcode";
 import { getSession } from "@/lib/supabase";
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
@@ -12,8 +12,11 @@ export async function GET(
       return NextResponse.json({ error: "Session not found" }, { status: 404 });
     }
 
-    const qrCode = await generateQRCode(params.id);
-    return NextResponse.json({ qrCode });
+    const host = request.headers.get("x-forwarded-host") || request.headers.get("host");
+    const proto = request.headers.get("x-forwarded-proto");
+    const baseUrl = resolveAppUrl(host, proto);
+    const qrCode = await generateQRCode(params.id, baseUrl);
+    return NextResponse.json({ qrCode, listenerUrl: `${baseUrl}/session/${params.id}/listen` });
   } catch (err) {
     console.error("QR code error:", err);
     return NextResponse.json(
