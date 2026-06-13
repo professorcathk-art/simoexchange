@@ -3,7 +3,7 @@ import type { LangCode } from "@/types";
 
 const langNames: Record<LangCode, string> = {
   en: "English",
-  zh: "Mandarin Chinese",
+  zh: "Simplified Chinese",
   ja: "Japanese",
   ko: "Korean",
 };
@@ -20,6 +20,36 @@ function getOpenAIClient(): OpenAI {
   });
 }
 
+function buildSystemPrompt(
+  targetLang: LangCode,
+  sourceLang?: LangCode
+): string {
+  if (sourceLang === "ja" && targetLang === "zh") {
+    return `You are an expert Japanese-to-Simplified Chinese simultaneous interpreter for live events.
+
+Rules:
+- Translate Japanese speech into natural, fluent Simplified Chinese (简体中文).
+- Handle keigo, idioms, and colloquial Japanese accurately — do NOT transliterate or romanize.
+- Preserve the speaker's intent and tone; avoid literal word-for-word errors.
+- If the input mixes Japanese and other languages, translate everything into Simplified Chinese.
+- Output ONLY the Chinese translation. No Japanese, no pinyin, no notes, no quotes.`;
+  }
+
+  if (sourceLang === "ja") {
+    return `You are a professional Japanese-to-${langNames[targetLang]} interpreter. Translate Japanese accurately into natural ${langNames[targetLang]}. Output ONLY the translation.`;
+  }
+
+  if (sourceLang) {
+    return `You are a professional simultaneous interpreter. Translate ${langNames[sourceLang]} into ${langNames[targetLang]}. Output ONLY the translated text in ${langNames[targetLang]}, no explanations.`;
+  }
+
+  return `You are a professional simultaneous interpreter for live multilingual events.
+The input may be English, Japanese, Korean, or Chinese (any script).
+Detect the source language, then translate into ${langNames[targetLang]}.
+For Japanese input targeting Chinese, use natural Simplified Chinese (not literal translation).
+Output ONLY the translated text, no explanations, no quotation marks.`;
+}
+
 export async function translate(
   text: string,
   targetLang: LangCode,
@@ -27,14 +57,10 @@ export async function translate(
 ): Promise<string> {
   const openai = getOpenAIClient();
 
-  const systemPrompt = sourceLang
-    ? `You are a professional simultaneous interpreter. Translate the following ${langNames[sourceLang]} text into ${langNames[targetLang]}. Output ONLY the translated text, no explanations, no quotation marks.`
-    : `You are a professional simultaneous interpreter. The input may be in English, Mandarin Chinese, Japanese, Korean, or a mix of these languages. Translate into ${langNames[targetLang]}. Output ONLY the translated text, no explanations, no quotation marks.`;
-
   const response = await openai.chat.completions.create({
     model: "gpt-4o-mini",
     messages: [
-      { role: "system", content: systemPrompt },
+      { role: "system", content: buildSystemPrompt(targetLang, sourceLang) },
       { role: "user", content: text },
     ],
     temperature: 0.1,

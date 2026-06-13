@@ -1,11 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import type { Session, TranscriptSegment as Segment } from "@/types";
 import { LANGUAGES } from "@/lib/constants";
 import { getSocket, joinSession } from "@/lib/socket-client";
-import { useAudioPlayer } from "@/components/AudioPlayer";
+import { useListenerAudio } from "@/hooks/useListenerAudio";
 import StatusBadge from "@/components/StatusBadge";
 import TranscriptSegment, { InterimTranscript } from "@/components/TranscriptSegment";
 
@@ -17,67 +17,25 @@ export default function ListenPage() {
   const [segments, setSegments] = useState<Segment[]>([]);
   const [interimText, setInterimText] = useState("");
   const [interimSpeakerId, setInterimSpeakerId] = useState<number | null>(null);
-  const [audioOn, setAudioOn] = useState(true);
-  const [audioUnlocked, setAudioUnlocked] = useState(false);
-  const [isPlaying, setIsPlaying] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const segmentsEndRef = useRef<HTMLDivElement>(null);
-  const audioQueueRef = useRef<string[]>([]);
-  const isPlayingRef = useRef(false);
-  const audioOnRef = useRef(true);
-  const audioUnlockedRef = useRef(false);
-  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
-  const { unlock } = useAudioPlayer();
 
-  const drainAudioQueue = useCallback(() => {
-    if (isPlayingRef.current || audioQueueRef.current.length === 0) return;
-    if (!audioOnRef.current || !audioUnlockedRef.current) return;
+  const {
+    audioOn,
+    audioUnlocked,
+    isPlaying,
+    playError,
+    bindAudioElement,
+    enableAudio,
+    toggleAudio,
+    queueAudio,
+  } = useListenerAudio();
 
-    const next = audioQueueRef.current.shift();
-    if (!next) return;
-
-    isPlayingRef.current = true;
-    setIsPlaying(true);
-
-    const audio = new Audio(`data:audio/mp3;base64,${next}`);
-    audio.setAttribute("playsinline", "true");
-    currentAudioRef.current = audio;
-
-    audio.onended = () => {
-      isPlayingRef.current = false;
-      setIsPlaying(false);
-      currentAudioRef.current = null;
-      drainAudioQueue();
-    };
-
-    audio.onerror = () => {
-      isPlayingRef.current = false;
-      setIsPlaying(false);
-      currentAudioRef.current = null;
-      drainAudioQueue();
-    };
-
-    audio.play().catch(() => {
-      isPlayingRef.current = false;
-      setIsPlaying(false);
-      drainAudioQueue();
-    });
-  }, []);
-
-  useEffect(() => {
-    audioOnRef.current = audioOn;
-    if (audioOn && audioUnlockedRef.current) drainAudioQueue();
-  }, [audioOn, drainAudioQueue]);
-
-  const queueAudio = useCallback(
-    (audioBase64: string) => {
-      audioQueueRef.current.push(audioBase64);
-      drainAudioQueue();
-    },
-    [drainAudioQueue]
-  );
+  const setAudioRef = (el: HTMLAudioElement | null) => {
+    bindAudioElement(el);
+  };
 
   useEffect(() => {
     Promise.all([
@@ -171,22 +129,6 @@ export default function ListenPage() {
     segmentsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [segments, interimText]);
 
-  useEffect(() => {
-    return () => {
-      currentAudioRef.current?.pause();
-      audioQueueRef.current = [];
-    };
-  }, []);
-
-  const enableAudio = async () => {
-    unlock();
-    audioUnlockedRef.current = true;
-    setAudioUnlocked(true);
-    setAudioOn(true);
-    audioOnRef.current = true;
-    drainAudioQueue();
-  };
-
   if (loading) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-background">
@@ -207,12 +149,22 @@ export default function ListenPage() {
 
   return (
     <main className="relative min-h-screen bg-background">
+      {/* Persistent DOM audio element — required for iOS Safari playback */}
+      <audio
+        ref={setAudioRef}
+        playsInline
+        preload="auto"
+        className="hidden"
+        aria-hidden
+      />
+
       {!audioUnlocked && (
-        <div
-          className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-black/80 px-6"
-          onClick={enableAudio}
-        >
-          <button className="rounded-2xl bg-accent px-8 py-4 text-lg font-semibold text-black">
+        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-black/80 px-6">
+          <button
+            type="button"
+            onClick={() => void enableAudio()}
+            className="rounded-2xl bg-accent px-8 py-4 text-lg font-semibold text-black"
+          >
             Tap to enable audio
           </button>
           <p className="max-w-xs text-center text-sm text-gray-400">
@@ -244,7 +196,8 @@ export default function ListenPage() {
         </div>
 
         <button
-          onClick={() => setAudioOn((v) => !v)}
+          type="button"
+          onClick={toggleAudio}
           className={`mb-2 w-full rounded-lg py-3 text-sm font-medium transition-colors ${
             audioOn
               ? "bg-accent/20 text-accent"
@@ -255,7 +208,12 @@ export default function ListenPage() {
         </button>
         {audioUnlocked && (
           <p className="mb-6 text-center text-xs text-gray-500">
-            {isPlaying ? "Playing translation..." : "Audio ready — new segments play automatically"}
+            {isPlaying
+              ? "Playing translation..."
+              : "Audio ready — new segments play automatically"}
+            {playError && (
+              <span className="mt-1 block text-red-400">{playError}</span>
+            )}
           </p>
         )}
 

@@ -49,11 +49,11 @@ export class EnergyVAD {
     this.audioContext = audioContext;
     this.analyser = analyser;
     this.source = source;
-    this.speechThreshold = options.speechThreshold ?? 0.018;
-    this.silenceThreshold = options.silenceThreshold ?? 0.008;
-    this.minSpeechMs = options.minSpeechMs ?? 280;
-    this.silenceHangoverMs = options.silenceHangoverMs ?? 600;
-    this.speechEndDelayMs = options.speechEndDelayMs ?? 500;
+    this.speechThreshold = options.speechThreshold ?? 0.01;
+    this.silenceThreshold = options.silenceThreshold ?? 0.004;
+    this.minSpeechMs = options.minSpeechMs ?? 180;
+    this.silenceHangoverMs = options.silenceHangoverMs ?? 800;
+    this.speechEndDelayMs = options.speechEndDelayMs ?? 700;
   }
 
   /** VAD init — wire AnalyserNode to the mic stream and start polling. */

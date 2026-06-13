@@ -8,6 +8,7 @@ import {
   updateSegmentTranslation,
 } from "@/lib/supabase";
 import { getDominantSpeaker } from "@/lib/speakers";
+import { detectSourceLanguage } from "@/lib/detect-language";
 import { translate } from "@/lib/translate";
 import { generateTTS } from "@/lib/tts";
 import {
@@ -33,6 +34,12 @@ interface ActiveConnection {
   configReceived: boolean;
   speechActive: boolean;
   deepgramStartedAt: number | null;
+}
+
+function sendWsJson(ws: WebSocket, payload: object): void {
+  if (ws.readyState === ws.OPEN) {
+    ws.send(JSON.stringify(payload));
+  }
 }
 
 const activeConnections = new Map<WebSocket, ActiveConnection>();
@@ -169,7 +176,7 @@ async function startDeepgramSession(
     deepgramSocket.on("message", (data) => {
       if (data.type !== "Results") return;
       const result = data as Deepgram.listen.ListenV1Results;
-      const { transcript, speakerId } = parseResult(result);
+      const { transcript, speakerId, sourceLang } = parseResult(result);
       if (!transcript) return;
 
       const isFinal = result.speech_final || result.is_final;
@@ -179,7 +186,8 @@ async function startDeepgramSession(
           conn.sessionId,
           transcript,
           conn.targetLang,
-          speakerId
+          speakerId,
+          sourceLang
         ).catch((err) => console.error("Process final error:", err));
       } else if (!isFinal) {
         emitToSession(conn.sessionId, "transcript_interim", {
@@ -200,6 +208,7 @@ async function startDeepgramSession(
     conn.deepgramReady = true;
     conn.deepgramConnecting = false;
     flushAudioQueue(conn);
+    sendWsJson(ws, { type: "deepgram_ready" });
     console.log(`[audio-ws] Deepgram active for session ${conn.sessionId}`);
   } catch (err) {
     conn.deepgramConnecting = false;
@@ -217,7 +226,7 @@ function scheduleSuspendDeepgram(conn: ActiveConnection): void {
   if (conn.suspendTimer) clearTimeout(conn.suspendTimer);
   conn.suspendTimer = setTimeout(() => {
     if (!conn.speechActive) suspendDeepgramSession(conn);
-  }, 500);
+  }, 2500);
 }
 
 function suspendDeepgramSession(conn: ActiveConnection): void {
@@ -248,7 +257,8 @@ async function processFinalTranscript(
   sessionId: string,
   text: string,
   targetLang: LangCode,
-  speakerId: number | null
+  speakerId: number | null,
+  sourceLang?: LangCode
 ): Promise<void> {
   const seqNo = await getNextSeqNo(sessionId);
   const segment = await insertSegment(sessionId, seqNo, text, speakerId);
@@ -265,7 +275,7 @@ async function processFinalTranscript(
   let audioBase64: string | null = null;
 
   try {
-    translatedText = await translate(text, targetLang);
+    translatedText = await translate(text, targetLang, sourceLang);
     if (!translatedText) translatedText = "[Translation unavailable]";
     trackTranslation(sessionId, text.length);
   } catch (err) {
@@ -297,8 +307,13 @@ async function processFinalTranscript(
 function parseResult(result: Deepgram.listen.ListenV1Results) {
   const alt = result.channel?.alternatives?.[0];
   const transcript = alt?.transcript?.trim() ?? "";
-  const speakerId = getDominantSpeaker(alt?.words ?? []);
-  return { transcript, speakerId };
+  const words = alt?.words ?? [];
+  const speakerId = getDominantSpeaker(words);
+  const sourceLang = detectSourceLanguage(
+    transcript,
+    words as { language?: string }[]
+  );
+  return { transcript, speakerId, sourceLang };
 }
 
 export async function setupAudioWebSocket(

@@ -5,7 +5,7 @@ import type { ApiUsageStats, VadUiState } from "@/lib/audio-ws-protocol";
 import { EnergyVAD } from "@/lib/vad";
 
 const LOW_POWER_KEY = "livetranslate_low_power_mode";
-const PRE_SPEECH_CHUNKS = 8;
+const PRE_SPEECH_CHUNKS = 16;
 
 const emptyUsage = (): ApiUsageStats => ({
   deepgramActiveSec: 0,
@@ -31,7 +31,10 @@ export function useHostRecording(sessionId: string) {
   const recordingRef = useRef(false);
   const lowPowerRef = useRef(false);
   const speechStreamingRef = useRef(false);
+  const deepgramReadyRef = useRef(false);
+  const webmHeaderRef = useRef<ArrayBuffer | null>(null);
   const preSpeechChunksRef = useRef<ArrayBuffer[]>([]);
+  const pendingChunksRef = useRef<ArrayBuffer[]>([]);
   const hangoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const vadFailedRef = useRef(false);
 
@@ -61,8 +64,10 @@ export function useHostRecording(sessionId: string) {
       setVadState(wsStatus === "connected" ? "deepgram_active" : "listening");
       return;
     }
-    if (speechStreamingRef.current) {
+    if (speechStreamingRef.current && deepgramReadyRef.current) {
       setVadState("deepgram_active");
+    } else if (speechStreamingRef.current) {
+      setVadState("speech_detected");
     } else if (vadRef.current?.speaking) {
       setVadState("speech_detected");
     } else {
@@ -74,16 +79,53 @@ export function useHostRecording(sessionId: string) {
     updateVadState();
   }, [recording, wsStatus, lowPowerMode, updateVadState]);
 
-  const flushPreSpeechBuffer = useCallback(() => {
+  /** Flush WebM header + buffered chunks once Deepgram is ready on the server. */
+  const flushBufferedAudio = useCallback(() => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+    if (webmHeaderRef.current) {
+      ws.send(webmHeaderRef.current);
+    }
     for (const chunk of preSpeechChunksRef.current) {
       ws.send(chunk);
     }
     preSpeechChunksRef.current = [];
+    for (const chunk of pendingChunksRef.current) {
+      ws.send(chunk);
+    }
+    pendingChunksRef.current = [];
   }, []);
 
-  /** speech start handler — open Deepgram path and stream buffered audio. */
+  const routeAudioChunk = useCallback(
+    (buf: ArrayBuffer) => {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+      if (!lowPowerRef.current || vadFailedRef.current) {
+        ws.send(buf);
+        return;
+      }
+
+      if (!speechStreamingRef.current) {
+        preSpeechChunksRef.current.push(buf);
+        if (preSpeechChunksRef.current.length > PRE_SPEECH_CHUNKS) {
+          preSpeechChunksRef.current.shift();
+        }
+        return;
+      }
+
+      if (!deepgramReadyRef.current) {
+        pendingChunksRef.current.push(buf);
+        return;
+      }
+
+      ws.send(buf);
+    },
+    []
+  );
+
+  /** speech start handler — request Deepgram; buffer until deepgram_ready. */
   const handleSpeechStart = useCallback(() => {
     if (!lowPowerRef.current || vadFailedRef.current) return;
     if (hangoverTimerRef.current) {
@@ -91,20 +133,22 @@ export function useHostRecording(sessionId: string) {
       hangoverTimerRef.current = null;
     }
     speechStreamingRef.current = true;
+    deepgramReadyRef.current = false;
     sendWsJson({ type: "speech_start" });
-    flushPreSpeechBuffer();
     updateVadState();
-  }, [flushPreSpeechBuffer, sendWsJson, updateVadState]);
+  }, [sendWsJson, updateVadState]);
 
-  /** speech end handler — tail hangover then suspend Deepgram. */
+  /** speech end handler — keep streaming briefly, then suspend Deepgram. */
   const handleSpeechEnd = useCallback(() => {
     if (!lowPowerRef.current || vadFailedRef.current) return;
     if (hangoverTimerRef.current) clearTimeout(hangoverTimerRef.current);
     hangoverTimerRef.current = setTimeout(() => {
       speechStreamingRef.current = false;
+      deepgramReadyRef.current = false;
+      pendingChunksRef.current = [];
       sendWsJson({ type: "speech_end" });
       updateVadState();
-    }, 500);
+    }, 1200);
   }, [sendWsJson, updateVadState]);
 
   const teardown = useCallback(() => {
@@ -120,7 +164,10 @@ export function useHostRecording(sessionId: string) {
     wsRef.current = null;
     recordingRef.current = false;
     speechStreamingRef.current = false;
+    deepgramReadyRef.current = false;
+    webmHeaderRef.current = null;
     preSpeechChunksRef.current = [];
+    pendingChunksRef.current = [];
     setRecording(false);
     setWsStatus("idle");
     setVadState("idle");
@@ -131,6 +178,7 @@ export function useHostRecording(sessionId: string) {
       setError(null);
       setWsStatus("connecting");
       vadFailedRef.current = false;
+      webmHeaderRef.current = null;
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -147,6 +195,20 @@ export function useHostRecording(sessionId: string) {
       );
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
+
+      ws.onmessage = (event) => {
+        if (typeof event.data !== "string") return;
+        try {
+          const msg = JSON.parse(event.data) as { type?: string };
+          if (msg.type === "deepgram_ready") {
+            deepgramReadyRef.current = true;
+            flushBufferedAudio();
+            updateVadState();
+          }
+        } catch {
+          // ignore non-JSON
+        }
+      };
 
       ws.onopen = async () => {
         setWsStatus("connected");
@@ -167,24 +229,20 @@ export function useHostRecording(sessionId: string) {
 
         const recorder = new MediaRecorder(stream, { mimeType });
         mediaRecorderRef.current = recorder;
+        let gotHeader = false;
 
         recorder.ondataavailable = async (e) => {
-          if (e.data.size === 0 || ws.readyState !== WebSocket.OPEN) return;
+          if (e.data.size === 0) return;
           const buf = await e.data.arrayBuffer();
-
-          if (lowPowerRef.current && !vadFailedRef.current) {
-            if (speechStreamingRef.current) {
+          if (!gotHeader) {
+            webmHeaderRef.current = buf;
+            gotHeader = true;
+            if (!lowPowerRef.current || vadFailedRef.current) {
               ws.send(buf);
-            } else {
-              preSpeechChunksRef.current.push(buf);
-              if (preSpeechChunksRef.current.length > PRE_SPEECH_CHUNKS) {
-                preSpeechChunksRef.current.shift();
-              }
             }
             return;
           }
-
-          ws.send(buf);
+          routeAudioChunk(buf);
         };
 
         recorder.start(250);
@@ -228,8 +286,10 @@ export function useHostRecording(sessionId: string) {
       setError(err instanceof Error ? err.message : "Microphone access denied");
     }
   }, [
+    flushBufferedAudio,
     handleSpeechEnd,
     handleSpeechStart,
+    routeAudioChunk,
     sendWsJson,
     sessionId,
     teardown,

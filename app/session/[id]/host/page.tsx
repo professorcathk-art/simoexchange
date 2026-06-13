@@ -217,6 +217,7 @@ export default function HostPage() {
           </label>
           <p className="text-xs text-gray-500">
             Only sends audio to Deepgram when speech is detected (saves API cost).
+            First words may take ~1–2s while Deepgram connects.
           </p>
 
           <div className="flex items-center justify-between">

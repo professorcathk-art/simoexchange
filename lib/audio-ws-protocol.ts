@@ -13,10 +13,16 @@ export interface AudioWsSpeechEnd {
   type: "speech_end";
 }
 
+export interface AudioWsDeepgramReady {
+  type: "deepgram_ready";
+}
+
 export type AudioWsControl =
   | AudioWsConfig
   | AudioWsSpeechStart
   | AudioWsSpeechEnd;
+
+export type AudioWsServerMessage = AudioWsDeepgramReady;
 
 export interface ApiUsageStats {
   deepgramActiveSec: number;
