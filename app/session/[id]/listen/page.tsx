@@ -21,12 +21,10 @@ export default function ListenPage() {
   const [error, setError] = useState<string | null>(null);
 
   const segmentsEndRef = useRef<HTMLDivElement>(null);
-  const audioRef = useRef<HTMLAudioElement>(null);
 
   const {
     audioOn,
     audioUnlocked,
-    unlocking,
     isPlaying,
     playError,
     bindAudioElement,
@@ -35,12 +33,8 @@ export default function ListenPage() {
     queueAudio,
   } = useListenerAudio();
 
-  useEffect(() => {
-    bindAudioElement(audioRef.current);
-  }, [bindAudioElement, loading]);
-
-  const handleEnableAudio = () => {
-    enableAudio();
+  const setAudioRef = (el: HTMLAudioElement | null) => {
+    bindAudioElement(el);
   };
 
   useEffect(() => {
@@ -137,16 +131,34 @@ export default function ListenPage() {
 
   if (loading) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-background">
-        <p className="text-gray-400">Loading...</p>
+      <main className="relative min-h-screen bg-background">
+        <audio
+          ref={setAudioRef}
+          playsInline
+          preload="auto"
+          className="pointer-events-none fixed left-0 top-0 h-px w-px opacity-0"
+          aria-hidden
+        />
+        <div className="flex min-h-screen items-center justify-center">
+          <p className="text-gray-400">Loading...</p>
+        </div>
       </main>
     );
   }
 
   if (error || !session) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-background px-4">
-        <p className="text-red-400">{error || "Session not found"}</p>
+      <main className="relative min-h-screen bg-background px-4">
+        <audio
+          ref={setAudioRef}
+          playsInline
+          preload="auto"
+          className="pointer-events-none fixed left-0 top-0 h-px w-px opacity-0"
+          aria-hidden
+        />
+        <div className="flex min-h-screen items-center justify-center">
+          <p className="text-red-400">{error || "Session not found"}</p>
+        </div>
       </main>
     );
   }
@@ -155,9 +167,8 @@ export default function ListenPage() {
 
   return (
     <main className="relative min-h-screen bg-background">
-      {/* Must stay in DOM and NOT use display:none — iOS blocks play() otherwise */}
       <audio
-        ref={audioRef}
+        ref={setAudioRef}
         playsInline
         preload="auto"
         className="pointer-events-none fixed left-0 top-0 h-px w-px opacity-0"
@@ -171,22 +182,22 @@ export default function ListenPage() {
         >
           <button
             type="button"
-            onPointerDown={(e) => {
+            onTouchStart={(e) => {
               e.stopPropagation();
-              handleEnableAudio();
+              enableAudio();
             }}
-            disabled={unlocking}
-            className="min-h-[52px] min-w-[240px] cursor-pointer rounded-2xl bg-accent px-8 py-4 text-lg font-semibold text-black active:scale-95 disabled:opacity-70"
+            onClick={(e) => {
+              e.stopPropagation();
+              enableAudio();
+            }}
+            className="min-h-[52px] min-w-[240px] cursor-pointer rounded-2xl bg-accent px-8 py-4 text-lg font-semibold text-black active:scale-95"
             style={{ touchAction: "manipulation", WebkitTapHighlightColor: "transparent" }}
           >
-            {unlocking ? "Enabling..." : "Tap to enable audio"}
+            Tap to enable audio
           </button>
           <p className="max-w-xs text-center text-sm text-gray-400">
             Required on mobile to play translated speech in real time
           </p>
-          {playError && (
-            <p className="max-w-xs text-center text-sm text-red-400">{playError}</p>
-          )}
         </div>
       )}
 
@@ -229,7 +240,7 @@ export default function ListenPage() {
               ? "Playing translation..."
               : "Audio ready — new segments play automatically"}
             {playError && (
-              <span className="mt-1 block text-red-400">{playError}</span>
+              <span className="mt-1 block text-amber-400">{playError}</span>
             )}
           </p>
         )}

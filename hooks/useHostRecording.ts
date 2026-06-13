@@ -108,6 +108,7 @@ export function useHostRecording(sessionId: string) {
       }
 
       if (!speechStreamingRef.current) {
+        // Keep ring buffer; header is also in webmHeaderRef for flush
         preSpeechChunksRef.current.push(buf);
         if (preSpeechChunksRef.current.length > PRE_SPEECH_CHUNKS) {
           preSpeechChunksRef.current.shift();
@@ -202,7 +203,9 @@ export function useHostRecording(sessionId: string) {
           const msg = JSON.parse(event.data) as { type?: string };
           if (msg.type === "deepgram_ready") {
             deepgramReadyRef.current = true;
-            flushBufferedAudio();
+            if (lowPowerRef.current && !vadFailedRef.current) {
+              flushBufferedAudio();
+            }
             updateVadState();
           }
         } catch {
@@ -238,7 +241,7 @@ export function useHostRecording(sessionId: string) {
             webmHeaderRef.current = buf;
             gotHeader = true;
             if (!lowPowerRef.current || vadFailedRef.current) {
-              ws.send(buf);
+              routeAudioChunk(buf);
             }
             return;
           }

@@ -34,6 +34,7 @@ export interface ApiUsageStats {
 }
 
 export function parseControlMessage(raw: string): AudioWsControl | null {
+  if (raw.length > 256) return null;
   try {
     const msg = JSON.parse(raw) as AudioWsControl;
     if (

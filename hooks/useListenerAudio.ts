@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   base64ToBlobUrl,
   unlockWithAudioContext,
+  unlockWithAudioContextSync,
   unlockWithAudioElement,
 } from "@/lib/audio-playback";
 
@@ -12,13 +13,11 @@ export function useListenerAudio() {
   const queueRef = useRef<string[]>([]);
   const playingRef = useRef(false);
   const unlockedRef = useRef(false);
-  const unlockingRef = useRef(false);
   const audioOnRef = useRef(true);
   const blobUrlsRef = useRef<Set<string>>(new Set());
 
   const [audioOn, setAudioOn] = useState(true);
   const [audioUnlocked, setAudioUnlocked] = useState(false);
-  const [unlocking, setUnlocking] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playError, setPlayError] = useState<string | null>(null);
 
@@ -74,34 +73,35 @@ export function useListenerAudio() {
   }, []);
 
   /**
-   * Must be called synchronously from pointer/touch handler (not async).
-   * iOS Safari only allows play() inside the direct user-gesture call stack.
+   * Call synchronously from pointer/touch handler.
+   * Dismiss overlay immediately — never block UI on audio promises (iOS can hang).
    */
   const enableAudio = useCallback(() => {
     const audio = audioElRef.current;
-    if (!audio || unlockingRef.current || unlockedRef.current) return;
+    if (!audio || unlockedRef.current) return;
 
-    unlockingRef.current = true;
-    setUnlocking(true);
+    unlockWithAudioContextSync();
+
+    unlockedRef.current = true;
+    audioOnRef.current = true;
+    setAudioUnlocked(true);
+    setAudioOn(true);
     setPlayError(null);
 
-    unlockWithAudioElement(audio)
+    const playPromise = (() => {
+      try {
+        return unlockWithAudioElement(audio);
+      } catch {
+        return Promise.reject(new Error("play failed"));
+      }
+    })();
+
+    playPromise
       .catch(() => unlockWithAudioContext())
-      .then(() => {
-        unlockedRef.current = true;
-        audioOnRef.current = true;
-        setAudioUnlocked(true);
-        setAudioOn(true);
-        setPlayError(null);
-        void playNext();
-      })
+      .then(() => void playNext())
       .catch((err) => {
         console.error("Audio unlock failed:", err);
-        setPlayError("Could not unlock audio — tap the button again");
-      })
-      .finally(() => {
-        unlockingRef.current = false;
-        setUnlocking(false);
+        setPlayError("Audio enabled — translations will play when available");
       });
   }, [playNext]);
 
@@ -156,7 +156,6 @@ export function useListenerAudio() {
   return {
     audioOn,
     audioUnlocked,
-    unlocking,
     isPlaying,
     playError,
     bindAudioElement,

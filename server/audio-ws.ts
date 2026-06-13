@@ -52,13 +52,12 @@ function toBuffer(data: WebSocket.RawData): Buffer {
 }
 
 function isTextControl(data: WebSocket.RawData): string | null {
-  if (Buffer.isBuffer(data)) {
-    const text = data.toString("utf8");
-    if (text.startsWith("{")) return text;
-    return null;
+  if (typeof data === "string") {
+    return parseControlMessage(data) ? data : null;
   }
-  if (typeof data === "string") return data;
-  return null;
+  if (!Buffer.isBuffer(data) || data.length > 256) return null;
+  const text = data.toString("utf8");
+  return parseControlMessage(text) ? text : null;
 }
 
 function flushAudioQueue(conn: ActiveConnection): void {
@@ -141,7 +140,7 @@ async function startDeepgramSession(
   ws: WebSocket,
   conn: ActiveConnection
 ): Promise<void> {
-  if (conn.deepgramReady || conn.deepgramConnecting || conn.deepgramSocket) return;
+  if (conn.deepgramReady || conn.deepgramConnecting) return;
   if (!process.env.DEEPGRAM_API_KEY) return;
 
   conn.deepgramConnecting = true;
@@ -212,6 +211,8 @@ async function startDeepgramSession(
     console.log(`[audio-ws] Deepgram active for session ${conn.sessionId}`);
   } catch (err) {
     conn.deepgramConnecting = false;
+    conn.deepgramSocket = null;
+    conn.deepgramReady = false;
     console.error("Deepgram connection error:", err);
     if (!conn.lowPowerMode) {
       cleanupConnection(ws);
@@ -353,7 +354,28 @@ export async function setupAudioWebSocket(
   };
   activeConnections.set(ws, conn);
 
-  ws.on("message", (data) => handleAudioChunk(ws, data));
+  let legacyStartTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+    legacyStartTimer = null;
+    if (!conn.configReceived && !conn.deepgramReady && !conn.deepgramConnecting) {
+      void startDeepgramSession(ws, conn);
+    }
+  }, 1500);
+
+  const cancelLegacyStart = () => {
+    if (legacyStartTimer) {
+      clearTimeout(legacyStartTimer);
+      legacyStartTimer = null;
+    }
+  };
+
+  ws.on("message", (data) => {
+    const controlText = isTextControl(data);
+    if (controlText) {
+      const msg = parseControlMessage(controlText);
+      if (msg?.type === "config") cancelLegacyStart();
+    }
+    handleAudioChunk(ws, data);
+  });
   ws.on("close", () => cleanupConnection(ws));
   ws.on("error", (err) => {
     console.error("WebSocket error:", err);
