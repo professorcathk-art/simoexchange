@@ -61,6 +61,21 @@ export async function createSession(
   return data;
 }
 
+export async function deleteSession(id: string): Promise<void> {
+  const { data, error } = await getSupabase()
+    .from("sessions")
+    .delete()
+    .eq("id", id)
+    .select("id");
+
+  if (error) throw error;
+  if (!data?.length) {
+    throw new Error(
+      "Session was not deleted. Run supabase/migrations/003_allow_delete_sessions.sql in the Supabase SQL Editor."
+    );
+  }
+}
+
 export async function updateSessionStatus(
   id: string,
   status: string
@@ -107,7 +122,8 @@ export async function getNextSeqNo(sessionId: string): Promise<number> {
 export async function insertSegment(
   sessionId: string,
   seqNo: number,
-  sourceText: string
+  sourceText: string,
+  speakerId: number | null = null
 ): Promise<TranscriptSegment> {
   const { data, error } = await getSupabase()
     .from("transcript_segments")
@@ -116,6 +132,7 @@ export async function insertSegment(
       seq_no: seqNo,
       source_text: sourceText,
       is_final: true,
+      speaker_id: speakerId,
     })
     .select()
     .single();

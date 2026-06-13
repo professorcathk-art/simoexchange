@@ -7,7 +7,7 @@ import { LANGUAGES } from "@/lib/constants";
 import { getSocket, joinSession } from "@/lib/socket-client";
 import { useAudioPlayer } from "@/components/AudioPlayer";
 import StatusBadge from "@/components/StatusBadge";
-import TranscriptSegment from "@/components/TranscriptSegment";
+import TranscriptSegment, { InterimTranscript } from "@/components/TranscriptSegment";
 
 export default function ListenPage() {
   const params = useParams();
@@ -16,6 +16,7 @@ export default function ListenPage() {
   const [session, setSession] = useState<Session | null>(null);
   const [segments, setSegments] = useState<Segment[]>([]);
   const [interimText, setInterimText] = useState("");
+  const [interimSpeakerId, setInterimSpeakerId] = useState<number | null>(null);
   const [audioOn, setAudioOn] = useState(false);
   const [audioUnlocked, setAudioUnlocked] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -68,12 +69,19 @@ export default function ListenPage() {
     const socket = getSocket();
     joinSession(sessionId);
 
-    socket.on("transcript_interim", (data: { text: string }) => {
+    socket.on("transcript_interim", (data: { text: string; speakerId?: number | null }) => {
       setInterimText(data.text);
+      setInterimSpeakerId(data.speakerId ?? null);
     });
 
-    socket.on("transcript_final", (data: { text: string; segmentId: string; seqNo: number }) => {
+    socket.on("transcript_final", (data: {
+      text: string;
+      segmentId: string;
+      seqNo: number;
+      speakerId?: number | null;
+    }) => {
       setInterimText("");
+      setInterimSpeakerId(null);
       setSegments((prev) => {
         if (prev.some((s) => s.id === data.segmentId)) return prev;
         return [
@@ -86,6 +94,7 @@ export default function ListenPage() {
             is_final: true,
             translated_text: null,
             audio_base64: null,
+            speaker_id: data.speakerId ?? null,
             created_at: new Date().toISOString(),
           },
         ];
@@ -151,7 +160,6 @@ export default function ListenPage() {
     );
   }
 
-  const sourceLang = LANGUAGES.find((l) => l.code === session.source_lang);
   const targetLang = LANGUAGES.find((l) => l.code === session.target_lang);
 
   return (
@@ -179,9 +187,9 @@ export default function ListenPage() {
           </div>
         )}
 
-        <div className="mb-4 flex gap-2">
+        <div className="mb-4 flex flex-wrap gap-2">
           <span className="rounded-full border border-white/10 bg-card px-3 py-1 text-xs text-gray-300">
-            {sourceLang?.flag} {sourceLang?.name}
+            🌐 Multi-language (EN/ZH/JA/KO)
           </span>
           <span className="text-gray-500">→</span>
           <span className="rounded-full border border-accent/30 bg-accent/10 px-3 py-1 text-xs text-accent">
@@ -206,10 +214,7 @@ export default function ListenPage() {
           ))}
 
           {interimText && (
-            <div className="rounded-xl border border-white/5 bg-card/30 p-4">
-              <p className="text-sm text-gray-500">{interimText}</p>
-              <p className="mt-1 text-lg text-gray-600">...</p>
-            </div>
+            <InterimTranscript text={interimText} speakerId={interimSpeakerId} />
           )}
 
           {segments.length === 0 && !interimText && session.status !== "ended" && (

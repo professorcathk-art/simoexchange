@@ -22,18 +22,19 @@ function getOpenAIClient(): OpenAI {
 
 export async function translate(
   text: string,
-  sourceLang: LangCode,
-  targetLang: LangCode
+  targetLang: LangCode,
+  sourceLang?: LangCode
 ): Promise<string> {
   const openai = getOpenAIClient();
+
+  const systemPrompt = sourceLang
+    ? `You are a professional simultaneous interpreter. Translate the following ${langNames[sourceLang]} text into ${langNames[targetLang]}. Output ONLY the translated text, no explanations, no quotation marks.`
+    : `You are a professional simultaneous interpreter. The input may be in English, Mandarin Chinese, Japanese, Korean, or a mix of these languages. Translate into ${langNames[targetLang]}. Output ONLY the translated text, no explanations, no quotation marks.`;
 
   const response = await openai.chat.completions.create({
     model: "gpt-4o-mini",
     messages: [
-      {
-        role: "system",
-        content: `You are a professional simultaneous interpreter. Translate the following ${langNames[sourceLang]} text into ${langNames[targetLang]}. Output ONLY the translated text, no explanations, no quotation marks.`,
-      },
+      { role: "system", content: systemPrompt },
       { role: "user", content: text },
     ],
     temperature: 0.1,

@@ -52,7 +52,8 @@ export default function NewSessionPage() {
 
         <h1 className="mt-6 text-2xl font-bold text-white">Create Session</h1>
         <p className="mt-1 text-gray-400">
-          Set up a new live translation session
+          Multi-speaker, multi-language meetings — all speech auto-detected and
+          translated to your target language
         </p>
 
         <form onSubmit={handleSubmit} className="mt-8 space-y-6">
@@ -72,8 +73,11 @@ export default function NewSessionPage() {
 
           <div>
             <label className="mb-2 block text-sm font-medium text-gray-300">
-              Source Language
+              Primary Language <span className="text-gray-500">(optional hint)</span>
             </label>
+            <p className="mb-2 text-xs text-gray-500">
+              All EN/ZH/JA/KO are auto-detected. This is used for display only.
+            </p>
             <select
               value={sourceLang}
               onChange={(e) => {

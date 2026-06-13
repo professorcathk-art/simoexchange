@@ -9,7 +9,7 @@ import { getSocket, joinSession } from "@/lib/socket-client";
 import { useAudioPlayer } from "@/components/AudioPlayer";
 import StatusBadge from "@/components/StatusBadge";
 import QRCodeDisplay from "@/components/QRCodeDisplay";
-import TranscriptSegment from "@/components/TranscriptSegment";
+import TranscriptSegment, { InterimTranscript } from "@/components/TranscriptSegment";
 
 export default function HostPage() {
   const params = useParams();
@@ -18,6 +18,7 @@ export default function HostPage() {
   const [session, setSession] = useState<Session | null>(null);
   const [segments, setSegments] = useState<Segment[]>([]);
   const [interimText, setInterimText] = useState("");
+  const [interimSpeakerId, setInterimSpeakerId] = useState<number | null>(null);
   const [recording, setRecording] = useState(false);
   const [wsStatus, setWsStatus] = useState<"idle" | "connecting" | "connected" | "error">("idle");
   const [loading, setLoading] = useState(true);
@@ -51,12 +52,19 @@ export default function HostPage() {
     const socket = getSocket();
     joinSession(sessionId);
 
-    socket.on("transcript_interim", (data: { text: string }) => {
+    socket.on("transcript_interim", (data: { text: string; speakerId?: number | null }) => {
       setInterimText(data.text);
+      setInterimSpeakerId(data.speakerId ?? null);
     });
 
-    socket.on("transcript_final", (data: { text: string; segmentId: string; seqNo: number }) => {
+    socket.on("transcript_final", (data: {
+      text: string;
+      segmentId: string;
+      seqNo: number;
+      speakerId?: number | null;
+    }) => {
       setInterimText("");
+      setInterimSpeakerId(null);
       setSegments((prev) => {
         if (prev.some((s) => s.id === data.segmentId)) return prev;
         return [
@@ -69,6 +77,7 @@ export default function HostPage() {
             is_final: true,
             translated_text: null,
             audio_base64: null,
+            speaker_id: data.speakerId ?? null,
             created_at: new Date().toISOString(),
           },
         ];
@@ -81,6 +90,7 @@ export default function HostPage() {
       translatedText: string;
       audioBase64: string | null;
       seqNo: number;
+      speakerId?: number | null;
     }) => {
       setSegments((prev) =>
         prev.map((s) =>
@@ -223,6 +233,7 @@ export default function HostPage() {
     setRecording(false);
     setWsStatus("idle");
     setInterimText("");
+    setInterimSpeakerId(null);
   };
 
   const endSession = async () => {
@@ -263,7 +274,11 @@ export default function HostPage() {
               <StatusBadge status={session.status} size="sm" />
             </div>
             <p className="mt-2 text-sm text-gray-400">
-              {getLanguagePair(session.source_lang, session.target_lang)}
+              🌐 Multi-language (EN/ZH/JA/KO) →{" "}
+              {getLanguagePair(session.source_lang, session.target_lang).split("→")[1]?.trim()}
+            </p>
+            <p className="mt-1 text-xs text-gray-500">
+              Auto-detects speakers and languages
             </p>
           </div>
 
@@ -341,7 +356,7 @@ export default function HostPage() {
                 </p>
               ))}
               {interimText && (
-                <p className="text-gray-500">{interimText}</p>
+                <InterimTranscript text={interimText} speakerId={interimSpeakerId} />
               )}
               {!interimText && segments.length === 0 && (
                 <p className="text-gray-600">

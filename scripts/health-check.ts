@@ -63,6 +63,31 @@ async function checkSupabase() {
     const { error } = await sb.from("sessions").select("id").limit(1);
     if (error) throw error;
     ok("sessions table accessible");
+
+    const { data: created, error: createErr } = await sb
+      .from("sessions")
+      .insert({
+        name: "Delete policy test",
+        source_lang: "en",
+        target_lang: "zh",
+        status: "waiting",
+      })
+      .select("id")
+      .single();
+    if (createErr) throw createErr;
+
+    const { data: deleted, error: deleteErr } = await sb
+      .from("sessions")
+      .delete()
+      .eq("id", created.id)
+      .select("id");
+    if (deleteErr) throw deleteErr;
+    if (!deleted?.length) {
+      throw new Error(
+        "DELETE blocked by RLS — run supabase/migrations/003_allow_delete_sessions.sql in Supabase SQL Editor"
+      );
+    }
+    ok("session delete policy works");
   } catch (err) {
     fail("Supabase", err);
   }
@@ -84,7 +109,8 @@ async function checkDeepgram() {
     const socket = await withTimeout(
       dg.listen.v1.connect({
         model: "nova-3",
-        language: "en",
+        language: "multi",
+        diarize: "true",
         smart_format: "true",
         interim_results: "true",
         Authorization: `Token ${process.env.DEEPGRAM_API_KEY}`,
@@ -95,7 +121,7 @@ async function checkDeepgram() {
     socket.connect();
     await withTimeout(socket.waitForOpen(), 15000, "Deepgram open");
     socket.close();
-    ok("Deepgram live WebSocket connects");
+    ok("Deepgram multi+diarize WebSocket connects");
   } catch (err) {
     fail("Deepgram", err);
   }
@@ -237,6 +263,28 @@ async function checkHttpRoutes() {
   return sessionId;
 }
 
+async function checkDeleteSession(sessionId: string) {
+  console.log("\n[9] Delete session");
+  try {
+    const { res } = await fetchJson(`/api/sessions/${sessionId}`, {
+      method: "DELETE",
+    });
+    if (res.status !== 200) throw new Error(`status ${res.status}`);
+    ok("DELETE /api/sessions/[id]");
+  } catch (err) {
+    fail("DELETE session", err);
+    return;
+  }
+
+  try {
+    const { res } = await fetchJson(`/api/sessions/${sessionId}`);
+    if (res.status !== 404) throw new Error(`expected 404, got ${res.status}`);
+    ok("GET deleted session → 404");
+  } catch (err) {
+    fail("GET deleted session", err);
+  }
+}
+
 async function checkSocketIo() {
   console.log("\n[7] Socket.io");
   try {
@@ -312,6 +360,7 @@ async function main() {
 
   if (sessionId) {
     await checkAudioWebSocket(sessionId);
+    await checkDeleteSession(sessionId);
   }
 
   console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);

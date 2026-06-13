@@ -19,6 +19,7 @@ export interface TranscriptSegment {
   is_final: boolean;
   translated_text: string | null;
   audio_base64: string | null;
+  speaker_id: number | null;
   created_at: string;
 }
 
@@ -29,12 +30,14 @@ export interface SegmentUpdateEvent {
   translatedText: string;
   audioBase64: string | null;
   seqNo: number;
+  speakerId: number | null;
 }
 
 export interface TranscriptInterimEvent {
   sessionId: string;
   text: string;
   seqNo: number;
+  speakerId: number | null;
 }
 
 export interface TranscriptFinalEvent {
@@ -42,6 +45,7 @@ export interface TranscriptFinalEvent {
   text: string;
   seqNo: number;
   segmentId: string;
+  speakerId: number | null;
 }
 
 export interface SessionStatusEvent {

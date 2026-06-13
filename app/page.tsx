@@ -9,17 +9,39 @@ export default function HomePage() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetch("/api/sessions")
+  function loadSessions() {
+    return fetch("/api/sessions")
       .then((res) => {
         if (!res.ok) throw new Error("Failed to load sessions");
         return res.json();
       })
-      .then(setSessions)
+      .then(setSessions);
+  }
+
+  useEffect(() => {
+    loadSessions()
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   }, []);
+
+  async function handleDelete(id: string) {
+    setDeletingId(id);
+    setError(null);
+    try {
+      const res = await fetch(`/api/sessions/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to delete session");
+      }
+      setSessions((prev) => prev.filter((s) => s.id !== id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete session");
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   return (
     <main className="min-h-screen bg-background">
@@ -45,7 +67,13 @@ export default function HomePage() {
 
         {error && (
           <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-red-400">
-            {error}. Make sure Supabase is configured in .env.local
+            <p>{error}</p>
+            <p className="mt-2 text-sm text-red-300">
+              Set <code className="text-red-200">SUPABASE_URL</code> and{" "}
+              <code className="text-red-200">SUPABASE_ANON_KEY</code> in your
+              environment variables (Railway → Variables, or local{" "}
+              <code className="text-red-200">.env.local</code>), then redeploy.
+            </p>
           </div>
         )}
 
@@ -63,7 +91,12 @@ export default function HomePage() {
 
         <div className="grid gap-4 sm:grid-cols-2">
           {sessions.map((session) => (
-            <SessionCard key={session.id} session={session} />
+            <SessionCard
+              key={session.id}
+              session={session}
+              onDelete={handleDelete}
+              deleting={deletingId === session.id}
+            />
           ))}
         </div>
       </div>

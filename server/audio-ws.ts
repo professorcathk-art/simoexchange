@@ -6,6 +6,7 @@ import {
   insertSegment,
   updateSegmentTranslation,
 } from "@/lib/supabase";
+import { getDominantSpeaker } from "@/lib/speakers";
 import { translate } from "@/lib/translate";
 import { generateTTS } from "@/lib/tts";
 import { emitToSession } from "@/server/socket";
@@ -15,7 +16,6 @@ interface ActiveConnection {
   deepgramSocket: Awaited<ReturnType<DeepgramClient["listen"]["v1"]["connect"]>> | null;
   keepaliveInterval: ReturnType<typeof setInterval> | null;
   sessionId: string;
-  sourceLang: LangCode;
   targetLang: LangCode;
   audioQueue: Buffer[];
   deepgramReady: boolean;
@@ -63,24 +63,25 @@ function handleAudioChunk(ws: WebSocket, data: WebSocket.RawData): void {
 async function processFinalTranscript(
   sessionId: string,
   text: string,
-  sourceLang: LangCode,
-  targetLang: LangCode
+  targetLang: LangCode,
+  speakerId: number | null
 ): Promise<void> {
   const seqNo = await getNextSeqNo(sessionId);
-  const segment = await insertSegment(sessionId, seqNo, text);
+  const segment = await insertSegment(sessionId, seqNo, text, speakerId);
 
   emitToSession(sessionId, "transcript_final", {
     sessionId,
     text,
     seqNo,
     segmentId: segment.id,
+    speakerId,
   });
 
   let translatedText = "[Translation unavailable]";
   let audioBase64: string | null = null;
 
   try {
-    translatedText = await translate(text, sourceLang, targetLang);
+    translatedText = await translate(text, targetLang);
     if (!translatedText) translatedText = "[Translation unavailable]";
   } catch (err) {
     console.error("Translation error:", err);
@@ -103,7 +104,15 @@ async function processFinalTranscript(
     translatedText,
     audioBase64,
     seqNo,
+    speakerId,
   });
+}
+
+function parseResult(result: Deepgram.listen.ListenV1Results) {
+  const alt = result.channel?.alternatives?.[0];
+  const transcript = alt?.transcript?.trim() ?? "";
+  const speakerId = getDominantSpeaker(alt?.words ?? []);
+  return { transcript, speakerId };
 }
 
 export async function setupAudioWebSocket(
@@ -121,7 +130,6 @@ export async function setupAudioWebSocket(
     return;
   }
 
-  const sourceLang = session.source_lang as LangCode;
   const targetLang = session.target_lang as LangCode;
 
   if (!process.env.DEEPGRAM_API_KEY) {
@@ -133,7 +141,6 @@ export async function setupAudioWebSocket(
     deepgramSocket: null,
     keepaliveInterval: null,
     sessionId,
-    sourceLang,
     targetLang,
     audioQueue: [],
     deepgramReady: false,
@@ -155,11 +162,13 @@ export async function setupAudioWebSocket(
   try {
     const deepgramSocket = await deepgram.listen.v1.connect({
       model: "nova-3",
-      language: sourceLang,
+      language: "multi",
+      diarize: "true",
       smart_format: "true",
       punctuate: "true",
       interim_results: "true",
       utterance_end_ms: "1000",
+      endpointing: "100",
       vad_events: "true",
       Authorization: `Token ${process.env.DEEPGRAM_API_KEY}`,
     });
@@ -177,23 +186,24 @@ export async function setupAudioWebSocket(
     deepgramSocket.on("message", (data) => {
       if (data.type !== "Results") return;
       const result = data as Deepgram.listen.ListenV1Results;
-      const transcript =
-        result.channel?.alternatives?.[0]?.transcript?.trim() ?? "";
+      const { transcript, speakerId } = parseResult(result);
       if (!transcript) return;
 
       const isFinal = result.speech_final || result.is_final;
       if (isFinal && transcript !== conn.lastProcessedText) {
         conn.lastProcessedText = transcript;
-        console.log(`[deepgram] final: ${transcript}`);
-        processFinalTranscript(sessionId, transcript, sourceLang, targetLang).catch(
+        console.log(
+          `[deepgram] final (speaker ${speakerId ?? "?"}): ${transcript}`
+        );
+        processFinalTranscript(sessionId, transcript, targetLang, speakerId).catch(
           (err) => console.error("Process final error:", err)
         );
       } else if (!isFinal) {
-        console.log(`[deepgram] interim: ${transcript}`);
         emitToSession(sessionId, "transcript_interim", {
           sessionId,
           text: transcript,
           seqNo: -1,
+          speakerId,
         });
       }
     });
@@ -206,7 +216,7 @@ export async function setupAudioWebSocket(
     await deepgramSocket.waitForOpen();
     conn.deepgramReady = true;
     flushAudioQueue(conn);
-    console.log(`[audio-ws] Deepgram ready for session ${sessionId}`);
+    console.log(`[audio-ws] Deepgram multi+diarize ready for session ${sessionId}`);
   } catch (err) {
     console.error("Deepgram connection error:", err);
     cleanupConnection(ws);

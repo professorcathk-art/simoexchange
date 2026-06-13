@@ -30,6 +30,7 @@ ALTER TABLE transcript_segments ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Allow public read sessions" ON sessions FOR SELECT USING (true);
 CREATE POLICY "Allow public insert sessions" ON sessions FOR INSERT WITH CHECK (true);
 CREATE POLICY "Allow public update sessions" ON sessions FOR UPDATE USING (true);
+CREATE POLICY "Allow public delete sessions" ON sessions FOR DELETE USING (true);
 
 CREATE POLICY "Allow public read segments" ON transcript_segments FOR SELECT USING (true);
 CREATE POLICY "Allow public insert segments" ON transcript_segments FOR INSERT WITH CHECK (true);
