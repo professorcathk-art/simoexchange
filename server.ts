@@ -46,9 +46,10 @@ app.prepare().then(() => {
   setIO(io);
 
   io.on("connection", (socket) => {
-    socket.on("join_session", (sessionId: string) => {
+    socket.on("join_session", (sessionId: string, ack?: (res: { ok: boolean }) => void) => {
       if (sessionId) {
         socket.join(`session:${sessionId}`);
+        ack?.({ ok: true });
       }
     });
   });

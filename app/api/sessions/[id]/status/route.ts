@@ -21,13 +21,12 @@ export async function PATCH(
     const session = await updateSessionStatus(params.id, status);
 
     try {
-      getIO();
       emitToSession(params.id, "session_status", {
         sessionId: params.id,
         status,
       });
-    } catch {
-      // Socket.io may not be initialized during build
+    } catch (err) {
+      console.error("Socket.io emit failed:", err);
     }
 
     if (status === "ended") {

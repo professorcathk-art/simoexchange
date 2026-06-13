@@ -5,10 +5,12 @@ import { loadEnvConfig } from "@next/env";
 import { createServer } from "http";
 import { parse } from "url";
 import WebSocket from "ws";
+import { io as ioClient } from "socket.io-client";
 import { DeepgramClient } from "@deepgram/sdk";
 import OpenAI from "openai";
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 import { createClient } from "@supabase/supabase-js";
+import { buildListenerUrl, ensureUrlScheme } from "../lib/qrcode";
 
 loadEnvConfig(process.cwd());
 
@@ -50,6 +52,30 @@ async function checkEnv() {
   ]) {
     if (process.env[key]) ok(key);
     else fail(key, "missing");
+  }
+}
+
+async function checkQrUrlHelpers() {
+  console.log("\n[2b] QR URL helpers");
+  try {
+    const normalized = ensureUrlScheme(
+      "amusing-radiance-production-2939.up.railway.app"
+    );
+    if (!normalized.startsWith("https://")) {
+      throw new Error(`expected https:// prefix, got ${normalized}`);
+    }
+    ok("ensureUrlScheme adds https:// to bare hostnames");
+
+    const listener = buildListenerUrl(
+      "test-session-id",
+      "https://example.com"
+    );
+    if (listener !== "https://example.com/session/test-session-id/listen") {
+      throw new Error(`unexpected listener URL: ${listener}`);
+    }
+    ok("buildListenerUrl produces full listen path");
+  } catch (err) {
+    fail("QR URL helpers", err);
   }
 }
 
@@ -230,10 +256,26 @@ async function checkHttpRoutes() {
     const { res, json } = await fetchJson(`/api/sessions/${sessionId}/qrcode`);
     if (res.status !== 200) throw new Error(`status ${res.status}`);
     const qr = (json as { qrCode?: string }).qrCode ?? "";
+    const listenerUrl = (json as { listenerUrl?: string }).listenerUrl ?? "";
     if (!qr.startsWith("data:image")) throw new Error("invalid QR data");
-    ok("GET /api/sessions/[id]/qrcode");
+    if (!/^https?:\/\/.+\/session\/[^/]+\/listen$/.test(listenerUrl)) {
+      throw new Error(`listener URL must be absolute: ${listenerUrl}`);
+    }
+    ok(`GET /api/sessions/[id]/qrcode → ${listenerUrl}`);
   } catch (err) {
     fail("GET qrcode", err);
+  }
+
+  try {
+    const listenRes = await fetch(`${BASE}/session/${sessionId}/listen`);
+    if (listenRes.status !== 200) throw new Error(`status ${listenRes.status}`);
+    const html = await listenRes.text();
+    if (!html.includes("LiveTranslate") && !html.includes("Waiting for live captions")) {
+      throw new Error("listener page missing expected content");
+    }
+    ok(`GET /session/[id]/listen → ${listenRes.status}`);
+  } catch (err) {
+    fail("GET listener page", err);
   }
 
   try {
@@ -345,11 +387,78 @@ async function checkAudioWebSocket(sessionId: string) {
   });
 }
 
+async function checkListenerChannel(sessionId: string) {
+  console.log("\n[10] Listener Socket.io channel");
+  return new Promise<void>((resolve) => {
+    const socket = ioClient(BASE, {
+      path: "/socket.io",
+      transports: ["websocket", "polling"],
+    });
+
+    const timeout = setTimeout(() => {
+      socket.disconnect();
+      fail("Listener channel", "timeout waiting for session_status event");
+      resolve();
+    }, 15000);
+
+    const triggerStatusChange = () => {
+      fetch(`${BASE}/api/sessions/${sessionId}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "waiting" }),
+      })
+        .then(() =>
+          fetch(`${BASE}/api/sessions/${sessionId}/status`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ status: "live" }),
+          })
+        )
+        .catch((err) => {
+          clearTimeout(timeout);
+          fail("Listener channel", err);
+          socket.disconnect();
+          resolve();
+        });
+    };
+
+    socket.on("connect", () => {
+      socket.emit("join_session", sessionId, (res: { ok?: boolean }) => {
+        if (!res?.ok) {
+          clearTimeout(timeout);
+          fail("Listener channel", "join_session ack failed");
+          socket.disconnect();
+          resolve();
+          return;
+        }
+        ok("Listener joins session room");
+        triggerStatusChange();
+      });
+    });
+
+    socket.on("session_status", (data: { status?: string }) => {
+      if (data.status === "live") {
+        clearTimeout(timeout);
+        ok("Listener receives session_status via Socket.io");
+        socket.disconnect();
+        resolve();
+      }
+    });
+
+    socket.on("connect_error", (err) => {
+      clearTimeout(timeout);
+      fail("Listener channel", err);
+      resolve();
+    });
+  });
+}
+
 async function main() {
   console.log("=== LiveTranslate Health Check ===");
   console.log(`Target: ${BASE}`);
 
   await checkEnv();
+  await checkQrUrlHelpers();
   await checkSupabase();
   await checkDeepgram();
   await checkAiml();
@@ -360,6 +469,7 @@ async function main() {
 
   if (sessionId) {
     await checkAudioWebSocket(sessionId);
+    await checkListenerChannel(sessionId);
     await checkDeleteSession(sessionId);
   }
 
