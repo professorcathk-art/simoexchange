@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import type { ApiUsageStats } from "@/lib/audio-ws-protocol";
 import type { Session, TranscriptSegment as Segment } from "@/types";
 import { getLanguagePair } from "@/lib/constants";
 import { getSocket, joinSession } from "@/lib/socket-client";
@@ -10,6 +11,9 @@ import { useAudioPlayer } from "@/components/AudioPlayer";
 import StatusBadge from "@/components/StatusBadge";
 import QRCodeDisplay from "@/components/QRCodeDisplay";
 import TranscriptSegment, { InterimTranscript } from "@/components/TranscriptSegment";
+import VadStateIndicator from "@/components/VadStateIndicator";
+import ApiUsagePanel from "@/components/ApiUsagePanel";
+import { useHostRecording } from "@/hooks/useHostRecording";
 
 export default function HostPage() {
   const params = useParams();
@@ -19,17 +23,26 @@ export default function HostPage() {
   const [segments, setSegments] = useState<Segment[]>([]);
   const [interimText, setInterimText] = useState("");
   const [interimSpeakerId, setInterimSpeakerId] = useState<number | null>(null);
-  const [recording, setRecording] = useState(false);
-  const [wsStatus, setWsStatus] = useState<"idle" | "connecting" | "connected" | "error">("idle");
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [pageError, setPageError] = useState<string | null>(null);
 
-  const wsRef = useRef<WebSocket | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const recordingRef = useRef(false);
   const segmentsEndRef = useRef<HTMLDivElement>(null);
   const { play } = useAudioPlayer();
+
+  const {
+    recording,
+    wsStatus,
+    lowPowerMode,
+    setLowPowerMode,
+    vadState,
+    apiUsage,
+    setApiUsage,
+    error: recordingError,
+    setError: setRecordingError,
+    startRecording,
+    stopRecording,
+    teardown,
+  } = useHostRecording(sessionId);
 
   const loadSession = useCallback(async () => {
     const [sessionRes, segmentsRes] = await Promise.all([
@@ -44,9 +57,13 @@ export default function HostPage() {
 
   useEffect(() => {
     loadSession()
-      .catch((err) => setError(err.message))
+      .catch((err) => setPageError(err.message))
       .finally(() => setLoading(false));
   }, [loadSession]);
+
+  useEffect(() => {
+    return () => teardown();
+  }, [teardown]);
 
   useEffect(() => {
     const socket = getSocket();
@@ -111,21 +128,18 @@ export default function HostPage() {
       );
     });
 
+    socket.on("api_usage", (data: { usage: ApiUsageStats }) => {
+      if (data.usage) setApiUsage(data.usage);
+    });
+
     return () => {
       socket.off("transcript_interim");
       socket.off("transcript_final");
       socket.off("segment_update");
       socket.off("session_status");
+      socket.off("api_usage");
     };
-  }, [sessionId]);
-
-  useEffect(() => {
-    return () => {
-      mediaRecorderRef.current?.stop();
-      streamRef.current?.getTracks().forEach((t) => t.stop());
-      wsRef.current?.close();
-    };
-  }, []);
+  }, [sessionId, setApiUsage]);
 
   useEffect(() => {
     segmentsEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -137,109 +151,22 @@ export default function HostPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status }),
     });
-    if (res.ok) {
-      const updated = await res.json();
-      setSession(updated);
-    }
+    if (res.ok) setSession(await res.json());
   };
 
-  const startRecording = async () => {
-    try {
-      setError(null);
-      setWsStatus("connecting");
-
-      if (session?.status === "ended") {
-        await updateStatus("live");
-      }
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          channelCount: 1,
-        },
-      });
-      streamRef.current = stream;
-
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const ws = new WebSocket(
-        `${protocol}//${window.location.host}/api/ws/audio?sessionId=${sessionId}`
-      );
-      ws.binaryType = "arraybuffer";
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        setWsStatus("connected");
-
-        const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-          ? "audio/webm;codecs=opus"
-          : MediaRecorder.isTypeSupported("audio/webm")
-            ? "audio/webm"
-            : "";
-
-        if (!mimeType) {
-          setError("Browser does not support WebM audio recording");
-          setWsStatus("error");
-          ws.close();
-          return;
-        }
-
-        const recorder = new MediaRecorder(stream, { mimeType });
-        mediaRecorderRef.current = recorder;
-
-        recorder.ondataavailable = async (e) => {
-          if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) {
-            ws.send(await e.data.arrayBuffer());
-          }
-        };
-
-        recorder.start(250);
-        recordingRef.current = true;
-        setRecording(true);
-        updateStatus("live");
-      };
-
-      ws.onerror = () => {
-        setWsStatus("error");
-        setError("WebSocket connection failed");
-      };
-
-      ws.onclose = (event) => {
-        if (event.code !== 1000 && recordingRef.current) {
-          setWsStatus("error");
-          setError(
-            event.reason || `Audio connection closed (code ${event.code})`
-          );
-        }
-        recordingRef.current = false;
-        setRecording(false);
-      };
-    } catch (err) {
-      setWsStatus("error");
-      setError(
-        err instanceof Error ? err.message : "Microphone access denied"
-      );
-    }
-  };
-
-  const stopRecording = () => {
-    mediaRecorderRef.current?.stop();
-    mediaRecorderRef.current = null;
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
-    wsRef.current?.close();
-    wsRef.current = null;
-    recordingRef.current = false;
-    setRecording(false);
-    setWsStatus("idle");
-    setInterimText("");
-    setInterimSpeakerId(null);
+  const handleStartRecording = async () => {
+    setRecordingError(null);
+    if (session?.status === "ended") await updateStatus("live");
+    await startRecording();
+    await updateStatus("live");
   };
 
   const endSession = async () => {
     stopRecording();
     await updateStatus("ended");
   };
+
+  const displayError = pageError || recordingError;
 
   if (loading) {
     return (
@@ -249,10 +176,10 @@ export default function HostPage() {
     );
   }
 
-  if (error && !session) {
+  if (pageError && !session) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-background">
-        <p className="text-red-400">{error}</p>
+        <p className="text-red-400">{pageError}</p>
       </main>
     );
   }
@@ -262,7 +189,6 @@ export default function HostPage() {
   return (
     <main className="min-h-screen bg-background">
       <div className="mx-auto flex max-w-7xl flex-col gap-6 px-4 py-6 lg:flex-row">
-        {/* Left panel — Controls */}
         <div className="w-full shrink-0 space-y-6 rounded-xl border border-white/10 bg-card p-6 lg:w-80">
           <Link href="/" className="text-sm text-gray-400 hover:text-accent">
             ← All sessions
@@ -277,39 +203,44 @@ export default function HostPage() {
               🌐 Multi-language (EN/ZH/JA/KO) →{" "}
               {getLanguagePair(session.source_lang, session.target_lang).split("→")[1]?.trim()}
             </p>
-            <p className="mt-1 text-xs text-gray-500">
-              Auto-detects speakers and languages
-            </p>
           </div>
 
-          {recording && (
-            <p className="text-xs text-gray-500">
-              Audio:{" "}
+          <label className="flex cursor-pointer items-center justify-between rounded-lg border border-white/10 bg-white/5 px-3 py-2">
+            <span className="text-sm text-gray-300">Low Power Mode</span>
+            <input
+              type="checkbox"
+              checked={lowPowerMode}
+              disabled={recording}
+              onChange={(e) => setLowPowerMode(e.target.checked)}
+              className="h-4 w-4 accent-accent"
+            />
+          </label>
+          <p className="text-xs text-gray-500">
+            Only sends audio to Deepgram when speech is detected (saves API cost).
+          </p>
+
+          <div className="flex items-center justify-between">
+            <VadStateIndicator state={vadState} />
+            {recording && (
               <span
-                className={
+                className={`text-xs ${
                   wsStatus === "connected"
                     ? "text-green-400"
                     : wsStatus === "error"
                       ? "text-red-400"
                       : "text-yellow-400"
-                }
+                }`}
               >
-                {wsStatus === "connected"
-                  ? "Connected — speak now"
-                  : wsStatus === "connecting"
-                    ? "Connecting..."
-                    : wsStatus === "error"
-                      ? "Error"
-                      : "Idle"}
+                WS {wsStatus}
               </span>
-            </p>
-          )}
+            )}
+          </div>
 
           <div className="space-y-3">
             {!recording ? (
               <button
-                onClick={startRecording}
-                className="w-full rounded-lg bg-red-500 py-3 font-semibold text-white hover:bg-red-600 disabled:opacity-50"
+                onClick={handleStartRecording}
+                className="w-full rounded-lg bg-red-500 py-3 font-semibold text-white hover:bg-red-600"
               >
                 {session.status === "ended" ? "Restart Recording" : "Start Recording"}
               </button>
@@ -331,6 +262,7 @@ export default function HostPage() {
             </button>
           </div>
 
+          <ApiUsagePanel usage={apiUsage} lowPowerMode={lowPowerMode} />
           <QRCodeDisplay sessionId={sessionId} />
 
           <Link
@@ -341,7 +273,6 @@ export default function HostPage() {
           </Link>
         </div>
 
-        {/* Right panel — Live transcript */}
         <div className="flex-1 rounded-xl border border-white/10 bg-card p-6">
           <h2 className="mb-4 text-lg font-semibold text-white">Live Transcript</h2>
 
@@ -360,9 +291,7 @@ export default function HostPage() {
               )}
               {!interimText && segments.length === 0 && (
                 <p className="text-gray-600">
-                  {recording
-                    ? "Listening..."
-                    : "Start recording to see live transcript"}
+                  {recording ? "Listening..." : "Start recording to see live transcript"}
                 </p>
               )}
             </div>
@@ -386,8 +315,8 @@ export default function HostPage() {
             </div>
           </div>
 
-          {error && (
-            <p className="mt-4 text-sm text-red-400">{error}</p>
+          {displayError && (
+            <p className="mt-4 text-sm text-red-400">{displayError}</p>
           )}
         </div>
       </div>

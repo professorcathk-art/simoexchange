@@ -17,38 +17,66 @@ export default function ListenPage() {
   const [segments, setSegments] = useState<Segment[]>([]);
   const [interimText, setInterimText] = useState("");
   const [interimSpeakerId, setInterimSpeakerId] = useState<number | null>(null);
-  const [audioOn, setAudioOn] = useState(false);
+  const [audioOn, setAudioOn] = useState(true);
   const [audioUnlocked, setAudioUnlocked] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const segmentsEndRef = useRef<HTMLDivElement>(null);
   const audioQueueRef = useRef<string[]>([]);
   const isPlayingRef = useRef(false);
+  const audioOnRef = useRef(true);
+  const audioUnlockedRef = useRef(false);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const { unlock } = useAudioPlayer();
 
-  const playNextInQueue = useCallback(() => {
+  const drainAudioQueue = useCallback(() => {
     if (isPlayingRef.current || audioQueueRef.current.length === 0) return;
+    if (!audioOnRef.current || !audioUnlockedRef.current) return;
+
     const next = audioQueueRef.current.shift();
     if (!next) return;
+
     isPlayingRef.current = true;
+    setIsPlaying(true);
+
     const audio = new Audio(`data:audio/mp3;base64,${next}`);
+    audio.setAttribute("playsinline", "true");
+    currentAudioRef.current = audio;
+
     audio.onended = () => {
       isPlayingRef.current = false;
-      playNextInQueue();
+      setIsPlaying(false);
+      currentAudioRef.current = null;
+      drainAudioQueue();
     };
+
+    audio.onerror = () => {
+      isPlayingRef.current = false;
+      setIsPlaying(false);
+      currentAudioRef.current = null;
+      drainAudioQueue();
+    };
+
     audio.play().catch(() => {
       isPlayingRef.current = false;
+      setIsPlaying(false);
+      drainAudioQueue();
     });
   }, []);
 
+  useEffect(() => {
+    audioOnRef.current = audioOn;
+    if (audioOn && audioUnlockedRef.current) drainAudioQueue();
+  }, [audioOn, drainAudioQueue]);
+
   const queueAudio = useCallback(
     (audioBase64: string) => {
-      if (!audioOn || !audioUnlocked) return;
       audioQueueRef.current.push(audioBase64);
-      playNextInQueue();
+      drainAudioQueue();
     },
-    [audioOn, audioUnlocked, playNextInQueue]
+    [drainAudioQueue]
   );
 
   useEffect(() => {
@@ -69,12 +97,12 @@ export default function ListenPage() {
     const socket = getSocket();
     joinSession(sessionId);
 
-    socket.on("transcript_interim", (data: { text: string; speakerId?: number | null }) => {
+    const onInterim = (data: { text: string; speakerId?: number | null }) => {
       setInterimText(data.text);
       setInterimSpeakerId(data.speakerId ?? null);
-    });
+    };
 
-    socket.on("transcript_final", (data: {
+    const onFinal = (data: {
       text: string;
       segmentId: string;
       seqNo: number;
@@ -99,9 +127,9 @@ export default function ListenPage() {
           },
         ];
       });
-    });
+    };
 
-    socket.on("segment_update", (data: {
+    const onSegmentUpdate = (data: {
       segmentId: string;
       translatedText: string;
       audioBase64: string | null;
@@ -118,19 +146,24 @@ export default function ListenPage() {
         )
       );
       if (data.audioBase64) queueAudio(data.audioBase64);
-    });
+    };
 
-    socket.on("session_status", (data: { status: string }) => {
+    const onStatus = (data: { status: string }) => {
       setSession((prev) =>
         prev ? { ...prev, status: data.status as Session["status"] } : prev
       );
-    });
+    };
+
+    socket.on("transcript_interim", onInterim);
+    socket.on("transcript_final", onFinal);
+    socket.on("segment_update", onSegmentUpdate);
+    socket.on("session_status", onStatus);
 
     return () => {
-      socket.off("transcript_interim");
-      socket.off("transcript_final");
-      socket.off("segment_update");
-      socket.off("session_status");
+      socket.off("transcript_interim", onInterim);
+      socket.off("transcript_final", onFinal);
+      socket.off("segment_update", onSegmentUpdate);
+      socket.off("session_status", onStatus);
     };
   }, [sessionId, queueAudio]);
 
@@ -138,10 +171,20 @@ export default function ListenPage() {
     segmentsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [segments, interimText]);
 
-  const enableAudio = () => {
+  useEffect(() => {
+    return () => {
+      currentAudioRef.current?.pause();
+      audioQueueRef.current = [];
+    };
+  }, []);
+
+  const enableAudio = async () => {
     unlock();
+    audioUnlockedRef.current = true;
     setAudioUnlocked(true);
     setAudioOn(true);
+    audioOnRef.current = true;
+    drainAudioQueue();
   };
 
   if (loading) {
@@ -166,12 +209,15 @@ export default function ListenPage() {
     <main className="relative min-h-screen bg-background">
       {!audioUnlocked && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 px-6"
+          className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-black/80 px-6"
           onClick={enableAudio}
         >
           <button className="rounded-2xl bg-accent px-8 py-4 text-lg font-semibold text-black">
             Tap to enable audio
           </button>
+          <p className="max-w-xs text-center text-sm text-gray-400">
+            Required on mobile to play translated speech in real time
+          </p>
         </div>
       )}
 
@@ -199,7 +245,7 @@ export default function ListenPage() {
 
         <button
           onClick={() => setAudioOn((v) => !v)}
-          className={`mb-6 w-full rounded-lg py-3 text-sm font-medium transition-colors ${
+          className={`mb-2 w-full rounded-lg py-3 text-sm font-medium transition-colors ${
             audioOn
               ? "bg-accent/20 text-accent"
               : "border border-white/10 text-gray-400"
@@ -207,6 +253,11 @@ export default function ListenPage() {
         >
           {audioOn ? "🔊 Audio ON" : "🔇 Audio OFF"}
         </button>
+        {audioUnlocked && (
+          <p className="mb-6 text-center text-xs text-gray-500">
+            {isPlaying ? "Playing translation..." : "Audio ready — new segments play automatically"}
+          </p>
+        )}
 
         <div className="space-y-3 pb-8">
           {segments.map((seg) => (

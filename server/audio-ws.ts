@@ -1,5 +1,6 @@
 import type { WebSocket } from "ws";
 import { DeepgramClient, type Deepgram } from "@deepgram/sdk";
+import { parseControlMessage } from "@/lib/audio-ws-protocol";
 import {
   getSession,
   getNextSeqNo,
@@ -9,17 +10,29 @@ import {
 import { getDominantSpeaker } from "@/lib/speakers";
 import { translate } from "@/lib/translate";
 import { generateTTS } from "@/lib/tts";
+import {
+  trackDeepgramActiveSec,
+  trackDeepgramSessionStart,
+  trackTranslation,
+  trackTts,
+} from "@/server/api-usage";
 import { emitToSession } from "@/server/socket";
 import type { LangCode } from "@/types";
 
 interface ActiveConnection {
   deepgramSocket: Awaited<ReturnType<DeepgramClient["listen"]["v1"]["connect"]>> | null;
   keepaliveInterval: ReturnType<typeof setInterval> | null;
+  suspendTimer: ReturnType<typeof setTimeout> | null;
   sessionId: string;
   targetLang: LangCode;
   audioQueue: Buffer[];
   deepgramReady: boolean;
+  deepgramConnecting: boolean;
   lastProcessedText: string;
+  lowPowerMode: boolean;
+  configReceived: boolean;
+  speechActive: boolean;
+  deepgramStartedAt: number | null;
 }
 
 const activeConnections = new Map<WebSocket, ActiveConnection>();
@@ -29,6 +42,16 @@ function toBuffer(data: WebSocket.RawData): Buffer {
   if (data instanceof ArrayBuffer) return Buffer.from(data);
   if (Array.isArray(data)) return Buffer.concat(data);
   return Buffer.from(data as Uint8Array);
+}
+
+function isTextControl(data: WebSocket.RawData): string | null {
+  if (Buffer.isBuffer(data)) {
+    const text = data.toString("utf8");
+    if (text.startsWith("{")) return text;
+    return null;
+  }
+  if (typeof data === "string") return data;
+  return null;
 }
 
 function flushAudioQueue(conn: ActiveConnection): void {
@@ -43,9 +66,22 @@ function flushAudioQueue(conn: ActiveConnection): void {
   conn.audioQueue.length = 0;
 }
 
+function canSendAudioToDeepgram(conn: ActiveConnection): boolean {
+  if (!conn.lowPowerMode) return true;
+  return conn.speechActive;
+}
+
 function handleAudioChunk(ws: WebSocket, data: WebSocket.RawData): void {
   const conn = activeConnections.get(ws);
   if (!conn) return;
+
+  const controlText = isTextControl(data);
+  if (controlText) {
+    handleControlMessage(ws, conn, controlText);
+    return;
+  }
+
+  if (!canSendAudioToDeepgram(conn)) return;
 
   const buf = toBuffer(data);
   if (!conn.deepgramReady || !conn.deepgramSocket) {
@@ -58,6 +94,154 @@ function handleAudioChunk(ws: WebSocket, data: WebSocket.RawData): void {
   } catch (err) {
     console.error("Error sending audio to Deepgram:", err);
   }
+}
+
+function handleControlMessage(
+  ws: WebSocket,
+  conn: ActiveConnection,
+  raw: string
+): void {
+  const msg = parseControlMessage(raw);
+  if (!msg) return;
+
+  if (msg.type === "config") {
+    conn.configReceived = true;
+    conn.lowPowerMode = msg.lowPowerMode;
+    if (!conn.lowPowerMode) {
+      void startDeepgramSession(ws, conn);
+    }
+    return;
+  }
+
+  if (msg.type === "speech_start") {
+    conn.speechActive = true;
+    if (conn.suspendTimer) {
+      clearTimeout(conn.suspendTimer);
+      conn.suspendTimer = null;
+    }
+    void startDeepgramSession(ws, conn);
+    return;
+  }
+
+  if (msg.type === "speech_end") {
+    conn.speechActive = false;
+    scheduleSuspendDeepgram(conn);
+  }
+}
+
+/** Deepgram session lifecycle — open stream when speech needs transcription. */
+async function startDeepgramSession(
+  ws: WebSocket,
+  conn: ActiveConnection
+): Promise<void> {
+  if (conn.deepgramReady || conn.deepgramConnecting || conn.deepgramSocket) return;
+  if (!process.env.DEEPGRAM_API_KEY) return;
+
+  conn.deepgramConnecting = true;
+  const deepgram = new DeepgramClient({ apiKey: process.env.DEEPGRAM_API_KEY });
+
+  try {
+    const deepgramSocket = await deepgram.listen.v1.connect({
+      model: "nova-3",
+      language: "multi",
+      diarize: "true",
+      smart_format: "true",
+      punctuate: "true",
+      interim_results: "true",
+      utterance_end_ms: "1000",
+      endpointing: "100",
+      vad_events: "true",
+      Authorization: `Token ${process.env.DEEPGRAM_API_KEY}`,
+    });
+
+    conn.deepgramSocket = deepgramSocket;
+    conn.deepgramStartedAt = Date.now();
+    trackDeepgramSessionStart(conn.sessionId);
+
+    conn.keepaliveInterval = setInterval(() => {
+      try {
+        deepgramSocket.sendKeepAlive({ type: "KeepAlive" });
+      } catch {
+        // ignore keepalive errors
+      }
+    }, 8000);
+
+    deepgramSocket.on("message", (data) => {
+      if (data.type !== "Results") return;
+      const result = data as Deepgram.listen.ListenV1Results;
+      const { transcript, speakerId } = parseResult(result);
+      if (!transcript) return;
+
+      const isFinal = result.speech_final || result.is_final;
+      if (isFinal && transcript !== conn.lastProcessedText) {
+        conn.lastProcessedText = transcript;
+        processFinalTranscript(
+          conn.sessionId,
+          transcript,
+          conn.targetLang,
+          speakerId
+        ).catch((err) => console.error("Process final error:", err));
+      } else if (!isFinal) {
+        emitToSession(conn.sessionId, "transcript_interim", {
+          sessionId: conn.sessionId,
+          text: transcript,
+          seqNo: -1,
+          speakerId,
+        });
+      }
+    });
+
+    deepgramSocket.on("error", (err) => {
+      console.error("Deepgram error:", err);
+    });
+
+    deepgramSocket.connect();
+    await deepgramSocket.waitForOpen();
+    conn.deepgramReady = true;
+    conn.deepgramConnecting = false;
+    flushAudioQueue(conn);
+    console.log(`[audio-ws] Deepgram active for session ${conn.sessionId}`);
+  } catch (err) {
+    conn.deepgramConnecting = false;
+    console.error("Deepgram connection error:", err);
+    if (!conn.lowPowerMode) {
+      cleanupConnection(ws);
+      ws.close(1011, "Failed to connect to Deepgram");
+    }
+  }
+}
+
+/** Suspend Deepgram after silence hangover in low-power mode. */
+function scheduleSuspendDeepgram(conn: ActiveConnection): void {
+  if (!conn.lowPowerMode) return;
+  if (conn.suspendTimer) clearTimeout(conn.suspendTimer);
+  conn.suspendTimer = setTimeout(() => {
+    if (!conn.speechActive) suspendDeepgramSession(conn);
+  }, 500);
+}
+
+function suspendDeepgramSession(conn: ActiveConnection): void {
+  if (conn.deepgramStartedAt) {
+    const elapsed = (Date.now() - conn.deepgramStartedAt) / 1000;
+    trackDeepgramActiveSec(conn.sessionId, elapsed);
+    conn.deepgramStartedAt = null;
+  }
+  if (conn.keepaliveInterval) {
+    clearInterval(conn.keepaliveInterval);
+    conn.keepaliveInterval = null;
+  }
+  try {
+    conn.deepgramSocket?.sendCloseStream({ type: "CloseStream" });
+    conn.deepgramSocket?.close();
+  } catch {
+    // ignore
+  }
+  conn.deepgramSocket = null;
+  conn.deepgramReady = false;
+  conn.deepgramConnecting = false;
+  conn.lastProcessedText = "";
+  conn.audioQueue.length = 0;
+  console.log(`[audio-ws] Deepgram suspended for session ${conn.sessionId}`);
 }
 
 async function processFinalTranscript(
@@ -83,6 +267,7 @@ async function processFinalTranscript(
   try {
     translatedText = await translate(text, targetLang);
     if (!translatedText) translatedText = "[Translation unavailable]";
+    trackTranslation(sessionId, text.length);
   } catch (err) {
     console.error("Translation error:", err);
   }
@@ -90,6 +275,7 @@ async function processFinalTranscript(
   try {
     if (translatedText !== "[Translation unavailable]") {
       audioBase64 = await generateTTS(translatedText, targetLang);
+      trackTts(sessionId, translatedText.length);
     }
   } catch (err) {
     console.error("TTS error:", err);
@@ -130,8 +316,6 @@ export async function setupAudioWebSocket(
     return;
   }
 
-  const targetLang = session.target_lang as LangCode;
-
   if (!process.env.DEEPGRAM_API_KEY) {
     ws.close(1011, "DEEPGRAM_API_KEY not configured");
     return;
@@ -140,11 +324,17 @@ export async function setupAudioWebSocket(
   const conn: ActiveConnection = {
     deepgramSocket: null,
     keepaliveInterval: null,
+    suspendTimer: null,
     sessionId,
-    targetLang,
+    targetLang: session.target_lang as LangCode,
     audioQueue: [],
     deepgramReady: false,
+    deepgramConnecting: false,
     lastProcessedText: "",
+    lowPowerMode: false,
+    configReceived: false,
+    speechActive: false,
+    deepgramStartedAt: null,
   };
   activeConnections.set(ws, conn);
 
@@ -155,85 +345,19 @@ export async function setupAudioWebSocket(
     cleanupConnection(ws);
   });
 
-  const deepgram = new DeepgramClient({
-    apiKey: process.env.DEEPGRAM_API_KEY,
-  });
-
-  try {
-    const deepgramSocket = await deepgram.listen.v1.connect({
-      model: "nova-3",
-      language: "multi",
-      diarize: "true",
-      smart_format: "true",
-      punctuate: "true",
-      interim_results: "true",
-      utterance_end_ms: "1000",
-      endpointing: "100",
-      vad_events: "true",
-      Authorization: `Token ${process.env.DEEPGRAM_API_KEY}`,
-    });
-
-    conn.deepgramSocket = deepgramSocket;
-
-    conn.keepaliveInterval = setInterval(() => {
-      try {
-        deepgramSocket.sendKeepAlive({ type: "KeepAlive" });
-      } catch {
-        // ignore keepalive errors
-      }
-    }, 8000);
-
-    deepgramSocket.on("message", (data) => {
-      if (data.type !== "Results") return;
-      const result = data as Deepgram.listen.ListenV1Results;
-      const { transcript, speakerId } = parseResult(result);
-      if (!transcript) return;
-
-      const isFinal = result.speech_final || result.is_final;
-      if (isFinal && transcript !== conn.lastProcessedText) {
-        conn.lastProcessedText = transcript;
-        console.log(
-          `[deepgram] final (speaker ${speakerId ?? "?"}): ${transcript}`
-        );
-        processFinalTranscript(sessionId, transcript, targetLang, speakerId).catch(
-          (err) => console.error("Process final error:", err)
-        );
-      } else if (!isFinal) {
-        emitToSession(sessionId, "transcript_interim", {
-          sessionId,
-          text: transcript,
-          seqNo: -1,
-          speakerId,
-        });
-      }
-    });
-
-    deepgramSocket.on("error", (err) => {
-      console.error("Deepgram error:", err);
-    });
-
-    deepgramSocket.connect();
-    await deepgramSocket.waitForOpen();
-    conn.deepgramReady = true;
-    flushAudioQueue(conn);
-    console.log(`[audio-ws] Deepgram multi+diarize ready for session ${sessionId}`);
-  } catch (err) {
-    console.error("Deepgram connection error:", err);
-    cleanupConnection(ws);
-    ws.close(1011, "Failed to connect to Deepgram");
-  }
+  // Legacy clients without config: auto-start after short grace period.
+  setTimeout(() => {
+    if (!conn.configReceived && !conn.deepgramReady && !conn.deepgramConnecting) {
+      void startDeepgramSession(ws, conn);
+    }
+  }, 1500);
 }
 
 function cleanupConnection(ws: WebSocket): void {
   const conn = activeConnections.get(ws);
   if (conn) {
-    if (conn.keepaliveInterval) clearInterval(conn.keepaliveInterval);
-    try {
-      conn.deepgramSocket?.sendCloseStream({ type: "CloseStream" });
-      conn.deepgramSocket?.close();
-    } catch {
-      // ignore cleanup errors
-    }
+    if (conn.suspendTimer) clearTimeout(conn.suspendTimer);
+    suspendDeepgramSession(conn);
     activeConnections.delete(ws);
   }
 }

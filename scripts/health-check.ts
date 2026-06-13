@@ -346,17 +346,17 @@ async function checkAudioWebSocket(sessionId: string) {
     const ws = new WebSocket(`${wsUrl}/api/ws/audio?sessionId=${sessionId}`);
     const timeout = setTimeout(() => {
       ws.close();
-      fail("Audio WebSocket", "timeout — Deepgram did not become ready in 10s");
+      fail("Audio WebSocket", "timeout — Deepgram did not become ready in 15s");
       resolve();
-    }, 10000);
+    }, 15000);
 
     ws.on("open", () => {
       ok("Audio WebSocket connects");
-      // Send minimal WebM header bytes so Deepgram accepts containerized stream
+      ws.send(JSON.stringify({ type: "config", lowPowerMode: false }));
       const webmHeader = Buffer.from([
         0x1a, 0x45, 0xdf, 0xa3, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1f,
       ]);
-      ws.send(webmHeader);
+      setTimeout(() => ws.send(webmHeader), 200);
     });
 
     ws.on("close", (code) => {
@@ -375,7 +375,7 @@ async function checkAudioWebSocket(sessionId: string) {
       resolve();
     });
 
-    // If still open after 8s, server accepted connection (Deepgram setup async)
+    // If still open after 10s, server accepted connection (Deepgram setup async)
     setTimeout(() => {
       if (ws.readyState === WebSocket.OPEN) {
         clearTimeout(timeout);
@@ -383,7 +383,7 @@ async function checkAudioWebSocket(sessionId: string) {
         ws.close(1000);
         resolve();
       }
-    }, 8000);
+    }, 10000);
   });
 }
 
