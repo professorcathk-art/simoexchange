@@ -8,7 +8,7 @@ import {
   updateSegmentTranslation,
 } from "@/lib/supabase";
 import { getDominantSpeaker } from "@/lib/speakers";
-import { detectSourceLanguage } from "@/lib/detect-language";
+import { resolveSourceLanguage } from "@/lib/detect-language";
 import { translate } from "@/lib/translate";
 import { generateTTS } from "@/lib/tts";
 import {
@@ -26,6 +26,7 @@ interface ActiveConnection {
   suspendTimer: ReturnType<typeof setTimeout> | null;
   sessionId: string;
   targetLang: LangCode;
+  sessionSourceLang: LangCode;
   audioQueue: Buffer[];
   deepgramReady: boolean;
   deepgramConnecting: boolean;
@@ -175,7 +176,7 @@ async function startDeepgramSession(
     deepgramSocket.on("message", (data) => {
       if (data.type !== "Results") return;
       const result = data as Deepgram.listen.ListenV1Results;
-      const { transcript, speakerId, sourceLang } = parseResult(result);
+      const { transcript, speakerId, words } = parseResult(result);
       if (!transcript) return;
 
       const isFinal = result.speech_final || result.is_final;
@@ -186,7 +187,8 @@ async function startDeepgramSession(
           transcript,
           conn.targetLang,
           speakerId,
-          sourceLang
+          words as { language?: string }[],
+          conn.sessionSourceLang
         ).catch((err) => console.error("Process final error:", err));
       } else if (!isFinal) {
         emitToSession(conn.sessionId, "transcript_interim", {
@@ -259,7 +261,8 @@ async function processFinalTranscript(
   text: string,
   targetLang: LangCode,
   speakerId: number | null,
-  sourceLang?: LangCode
+  words: { language?: string }[],
+  sessionSourceLang: LangCode
 ): Promise<void> {
   const seqNo = await getNextSeqNo(sessionId);
   const segment = await insertSegment(sessionId, seqNo, text, speakerId);
@@ -276,6 +279,7 @@ async function processFinalTranscript(
   let audioBase64: string | null = null;
 
   try {
+    const sourceLang = resolveSourceLanguage(text, words, sessionSourceLang);
     translatedText = await translate(text, targetLang, sourceLang);
     if (!translatedText) translatedText = "[Translation unavailable]";
     trackTranslation(sessionId, text.length);
@@ -310,11 +314,7 @@ function parseResult(result: Deepgram.listen.ListenV1Results) {
   const transcript = alt?.transcript?.trim() ?? "";
   const words = alt?.words ?? [];
   const speakerId = getDominantSpeaker(words);
-  const sourceLang = detectSourceLanguage(
-    transcript,
-    words as { language?: string }[]
-  );
-  return { transcript, speakerId, sourceLang };
+  return { transcript, speakerId, words };
 }
 
 export async function setupAudioWebSocket(
@@ -343,6 +343,7 @@ export async function setupAudioWebSocket(
     suspendTimer: null,
     sessionId,
     targetLang: session.target_lang as LangCode,
+    sessionSourceLang: session.source_lang as LangCode,
     audioQueue: [],
     deepgramReady: false,
     deepgramConnecting: false,

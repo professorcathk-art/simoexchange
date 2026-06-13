@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   base64ToBlobUrl,
-  unlockWithAudioContext,
+  prepareMobileAudioElement,
+  SILENT_MP3_DATA_URL,
   unlockWithAudioContextSync,
-  unlockWithAudioElement,
 } from "@/lib/audio-playback";
 
 export function useListenerAudio() {
@@ -26,6 +26,19 @@ export function useListenerAudio() {
     blobUrlsRef.current.delete(url);
   }, []);
 
+  const setAudioSrc = useCallback(
+    (audio: HTMLAudioElement, b64: string) => {
+      const url = base64ToBlobUrl(b64);
+      blobUrlsRef.current.add(url);
+      const prev = audio.src;
+      if (prev.startsWith("blob:")) revokeUrl(prev);
+      audio.src = url;
+      audio.load();
+      return url;
+    },
+    [revokeUrl]
+  );
+
   const playNext = useCallback(async () => {
     const audio = audioElRef.current;
     if (!audio || playingRef.current || queueRef.current.length === 0) return;
@@ -37,15 +50,7 @@ export function useListenerAudio() {
     playingRef.current = true;
     setIsPlaying(true);
     setPlayError(null);
-
-    const url = base64ToBlobUrl(next);
-    blobUrlsRef.current.add(url);
-
-    const prev = audio.src;
-    if (prev.startsWith("blob:")) revokeUrl(prev);
-
-    audio.src = url;
-    audio.load();
+    setAudioSrc(audio, next);
 
     try {
       await audio.play();
@@ -53,57 +58,96 @@ export function useListenerAudio() {
       console.error("Audio play failed:", err);
       playingRef.current = false;
       setIsPlaying(false);
-      setPlayError("Tap enable audio again if playback stopped");
-      revokeUrl(url);
+      setPlayError("Tap ▶ on a segment if audio stops");
       void playNext();
     }
-  }, [revokeUrl]);
+  }, [setAudioSrc]);
 
   const queueAudio = useCallback(
     (audioBase64: string) => {
       if (!audioBase64) return;
       queueRef.current.push(audioBase64);
-      void playNext();
+      if (unlockedRef.current) void playNext();
     },
     [playNext]
   );
 
   const bindAudioElement = useCallback((el: HTMLAudioElement | null) => {
+    if (el) prepareMobileAudioElement(el);
     audioElRef.current = el;
   }, []);
 
   /**
-   * Call synchronously from pointer/touch handler.
-   * Dismiss overlay immediately — never block UI on audio promises (iOS can hang).
+   * Play one clip inside a user gesture (tap). Required for iOS retry / manual replay.
+   */
+  const playNow = useCallback(
+    (audioBase64: string) => {
+      const audio = audioElRef.current;
+      if (!audio || !audioBase64) return;
+
+      unlockWithAudioContextSync();
+      unlockedRef.current = true;
+      audioOnRef.current = true;
+      setAudioUnlocked(true);
+      setAudioOn(true);
+      setPlayError(null);
+
+      playingRef.current = true;
+      setIsPlaying(true);
+      setAudioSrc(audio, audioBase64);
+
+      const promise = audio.play();
+      if (promise) {
+        promise.catch((err) => {
+          console.error("playNow failed:", err);
+          playingRef.current = false;
+          setIsPlaying(false);
+          setPlayError("Could not play — try again");
+        });
+      }
+    },
+    [setAudioSrc]
+  );
+
+  /**
+   * Call synchronously from pointer/touch handler. First queued clip plays in the gesture stack.
    */
   const enableAudio = useCallback(() => {
     const audio = audioElRef.current;
     if (!audio || unlockedRef.current) return;
 
     unlockWithAudioContextSync();
-
+    prepareMobileAudioElement(audio);
     unlockedRef.current = true;
     audioOnRef.current = true;
     setAudioUnlocked(true);
     setAudioOn(true);
     setPlayError(null);
 
-    const playPromise = (() => {
-      try {
-        return unlockWithAudioElement(audio);
-      } catch {
-        return Promise.reject(new Error("play failed"));
-      }
-    })();
+    if (queueRef.current.length > 0) {
+      playingRef.current = true;
+      setIsPlaying(true);
+      const next = queueRef.current.shift()!;
+      setAudioSrc(audio, next);
+      void audio.play();
+      return;
+    }
 
-    playPromise
-      .catch(() => unlockWithAudioContext())
-      .then(() => void playNext())
-      .catch((err) => {
-        console.error("Audio unlock failed:", err);
-        setPlayError("Audio enabled — translations will play when available");
-      });
-  }, [playNext]);
+    audio.src = SILENT_MP3_DATA_URL;
+    audio.volume = 0.01;
+    const promise = audio.play();
+    if (promise) {
+      promise
+        .then(() => {
+          audio.pause();
+          audio.currentTime = 0;
+          audio.volume = 1;
+        })
+        .catch(() => {
+          setPlayError("Audio enabled — translations will play when available");
+        });
+    }
+  }, [setAudioSrc]);
 
   const toggleAudio = useCallback(() => {
     setAudioOn((prev) => {
@@ -162,5 +206,6 @@ export function useListenerAudio() {
     enableAudio,
     toggleAudio,
     queueAudio,
+    playNow,
   };
 }

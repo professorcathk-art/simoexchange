@@ -8,6 +8,15 @@ const langNames: Record<LangCode, string> = {
   ko: "Korean",
 };
 
+const STRICT_RULES = `You are a professional simultaneous interpreter for live events.
+
+CRITICAL RULES — NEVER VIOLATE:
+- Output ONLY the translated text in the target language.
+- NEVER ask questions. NEVER request more input. NEVER refuse to translate.
+- NEVER say things like "请提供", "请问", "无法翻译", "请", "provide", "cannot translate".
+- Even if the input is incomplete, fragmented, misspelled, or mixed-language, translate your best understanding.
+- Do not explain. Do not add notes. Do not use quotation marks around the output.`;
+
 function getOpenAIClient(): OpenAI {
   const apiKey = process.env.AIML_API_KEY || process.env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -20,34 +29,70 @@ function getOpenAIClient(): OpenAI {
   });
 }
 
-function buildSystemPrompt(
-  targetLang: LangCode,
-  sourceLang?: LangCode
-): string {
-  if (sourceLang === "ja" && targetLang === "zh") {
-    return `You are an expert Japanese-to-Simplified Chinese simultaneous interpreter for live events.
+function buildSystemPrompt(targetLang: LangCode, sourceLang?: LangCode): string {
+  const target = langNames[targetLang];
 
-Rules:
-- Translate Japanese speech into natural, fluent Simplified Chinese (简体中文).
-- Handle keigo, idioms, and colloquial Japanese accurately — do NOT transliterate or romanize.
-- Preserve the speaker's intent and tone; avoid literal word-for-word errors.
-- If the input mixes Japanese and other languages, translate everything into Simplified Chinese.
-- Output ONLY the Chinese translation. No Japanese, no pinyin, no notes, no quotes.`;
+  if (sourceLang && sourceLang !== targetLang) {
+    return `${STRICT_RULES}
+
+Translate from ${langNames[sourceLang]} into ${target}.
+Output language: ${target} only.`;
   }
 
-  if (sourceLang === "ja") {
-    return `You are a professional Japanese-to-${langNames[targetLang]} interpreter. Translate Japanese accurately into natural ${langNames[targetLang]}. Output ONLY the translation.`;
-  }
+  return `${STRICT_RULES}
 
-  if (sourceLang) {
-    return `You are a professional simultaneous interpreter. Translate ${langNames[sourceLang]} into ${langNames[targetLang]}. Output ONLY the translated text in ${langNames[targetLang]}, no explanations.`;
-  }
+The speaker may use English, Mandarin Chinese, Japanese, Korean, or a mix.
+Detect the source language and translate into ${target}.
+Output language: ${target} only.`;
+}
 
-  return `You are a professional simultaneous interpreter for live multilingual events.
-The input may be English, Japanese, Korean, or Chinese (any script).
-Detect the source language, then translate into ${langNames[targetLang]}.
-For Japanese input targeting Chinese, use natural Simplified Chinese (not literal translation).
-Output ONLY the translated text, no explanations, no quotation marks.`;
+const META_PATTERNS = [
+  /请提供/,
+  /请问/,
+  /无法翻译/,
+  /不能翻译/,
+  /请补充/,
+  /请给出/,
+  /请翻译/,
+  /please provide/i,
+  /cannot translate/i,
+  /unable to translate/i,
+  /complete.*sentence/i,
+  /完整.*句/,
+];
+
+export function isMetaTranslation(text: string): boolean {
+  const t = text.trim();
+  if (t.length < 4) return false;
+  if (META_PATTERNS.some((p) => p.test(t))) return true;
+  // Question-shaped meta responses
+  if (/[？?]$/.test(t) && /请|什么|吗|呢|could|would/i.test(t)) return true;
+  return false;
+}
+
+function fallbackTranslation(text: string, targetLang: LangCode): string {
+  // CJK source going to Chinese — pass through cleaned text
+  if (targetLang === "zh" && /[\u4e00-\u9fff]/.test(text)) {
+    return text.replace(/\s+/g, "").trim() || text;
+  }
+  return text;
+}
+
+async function callTranslate(
+  text: string,
+  systemPrompt: string
+): Promise<string> {
+  const openai = getOpenAIClient();
+  const response = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: text },
+    ],
+    temperature: 0.1,
+    max_tokens: 500,
+  });
+  return response.choices[0]?.message?.content?.trim() ?? "";
 }
 
 export async function translate(
@@ -55,17 +100,21 @@ export async function translate(
   targetLang: LangCode,
   sourceLang?: LangCode
 ): Promise<string> {
-  const openai = getOpenAIClient();
+  const trimmed = text.trim();
+  if (!trimmed) return "";
 
-  const response = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [
-      { role: "system", content: buildSystemPrompt(targetLang, sourceLang) },
-      { role: "user", content: text },
-    ],
-    temperature: 0.1,
-    max_tokens: 500,
-  });
+  let result = await callTranslate(trimmed, buildSystemPrompt(targetLang, sourceLang));
 
-  return response.choices[0]?.message?.content?.trim() ?? "";
+  if (isMetaTranslation(result)) {
+    result = await callTranslate(
+      trimmed,
+      buildSystemPrompt(targetLang, undefined)
+    );
+  }
+
+  if (isMetaTranslation(result)) {
+    return fallbackTranslation(trimmed, targetLang);
+  }
+
+  return result;
 }

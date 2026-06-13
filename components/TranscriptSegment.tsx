@@ -60,9 +60,21 @@ export default function TranscriptSegment({
         <SpeakerBadge speakerId={segment.speaker_id} />
       </div>
       <p className="mb-1 text-sm text-gray-500">{segment.source_text}</p>
-      <p className="text-xl text-white">
-        {segment.translated_text || "Translating..."}
-      </p>
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-xl text-white">
+          {segment.translated_text || "Translating..."}
+        </p>
+        {showPlayButton && segment.audio_base64 && onPlay && (
+          <button
+            type="button"
+            onClick={() => onPlay(segment.audio_base64!)}
+            className="shrink-0 rounded-lg border border-accent/30 bg-accent/10 px-3 py-2 text-sm text-accent active:scale-95"
+            aria-label="Play translation audio"
+          >
+            ▶
+          </button>
+        )}
+      </div>
     </div>
   );
 }

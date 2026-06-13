@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import type { Session, TranscriptSegment as Segment } from "@/types";
 import { LANGUAGES } from "@/lib/constants";
@@ -21,6 +21,7 @@ export default function ListenPage() {
   const [error, setError] = useState<string | null>(null);
 
   const segmentsEndRef = useRef<HTMLDivElement>(null);
+  const queuedAudioIdsRef = useRef<Set<string>>(new Set());
 
   const {
     audioOn,
@@ -31,11 +32,17 @@ export default function ListenPage() {
     enableAudio,
     toggleAudio,
     queueAudio,
+    playNow,
   } = useListenerAudio();
 
-  const setAudioRef = (el: HTMLAudioElement | null) => {
-    bindAudioElement(el);
-  };
+  const enqueueSegmentAudio = useCallback(
+    (segmentId: string, audioBase64: string | null) => {
+      if (!audioBase64 || queuedAudioIdsRef.current.has(segmentId)) return;
+      queuedAudioIdsRef.current.add(segmentId);
+      queueAudio(audioBase64);
+    },
+    [queueAudio]
+  );
 
   useEffect(() => {
     Promise.all([
@@ -103,7 +110,7 @@ export default function ListenPage() {
             : s
         )
       );
-      if (data.audioBase64) queueAudio(data.audioBase64);
+      enqueueSegmentAudio(data.segmentId, data.audioBase64);
     };
 
     const onStatus = (data: { status: string }) => {
@@ -123,146 +130,151 @@ export default function ListenPage() {
       socket.off("segment_update", onSegmentUpdate);
       socket.off("session_status", onStatus);
     };
-  }, [sessionId, queueAudio]);
+  }, [sessionId, enqueueSegmentAudio]);
+
+  useEffect(() => {
+    if (!audioUnlocked) return;
+    for (const seg of segments) {
+      enqueueSegmentAudio(seg.id, seg.audio_base64);
+    }
+  }, [audioUnlocked, segments, enqueueSegmentAudio]);
 
   useEffect(() => {
     segmentsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [segments, interimText]);
 
-  if (loading) {
-    return (
-      <main className="relative min-h-screen bg-background">
-        <audio
-          ref={setAudioRef}
-          playsInline
-          preload="auto"
-          className="pointer-events-none fixed left-0 top-0 h-px w-px opacity-0"
-          aria-hidden
-        />
-        <div className="flex min-h-screen items-center justify-center">
-          <p className="text-gray-400">Loading...</p>
-        </div>
-      </main>
-    );
-  }
-
-  if (error || !session) {
-    return (
-      <main className="relative min-h-screen bg-background px-4">
-        <audio
-          ref={setAudioRef}
-          playsInline
-          preload="auto"
-          className="pointer-events-none fixed left-0 top-0 h-px w-px opacity-0"
-          aria-hidden
-        />
-        <div className="flex min-h-screen items-center justify-center">
-          <p className="text-red-400">{error || "Session not found"}</p>
-        </div>
-      </main>
-    );
-  }
-
-  const targetLang = LANGUAGES.find((l) => l.code === session.target_lang);
+  const targetLang = session
+    ? LANGUAGES.find((l) => l.code === session.target_lang)
+    : null;
 
   return (
     <main className="relative min-h-screen bg-background">
       <audio
-        ref={setAudioRef}
+        ref={bindAudioElement}
         playsInline
         preload="auto"
-        className="pointer-events-none fixed left-0 top-0 h-px w-px opacity-0"
+        className="pointer-events-none fixed -left-[9999px] top-0 h-[1px] w-[1px]"
         aria-hidden
       />
 
-      {!audioUnlocked && (
-        <div
-          className="fixed inset-0 z-[100] flex flex-col items-center justify-center gap-4 bg-black/90 px-6"
-          style={{ touchAction: "manipulation" }}
-        >
-          <button
-            type="button"
-            onTouchStart={(e) => {
-              e.stopPropagation();
-              enableAudio();
-            }}
-            onClick={(e) => {
-              e.stopPropagation();
-              enableAudio();
-            }}
-            className="min-h-[52px] min-w-[240px] cursor-pointer rounded-2xl bg-accent px-8 py-4 text-lg font-semibold text-black active:scale-95"
-            style={{ touchAction: "manipulation", WebkitTapHighlightColor: "transparent" }}
-          >
-            Tap to enable audio
-          </button>
-          <p className="max-w-xs text-center text-sm text-gray-400">
-            Required on mobile to play translated speech in real time
-          </p>
+      {loading && (
+        <div className="flex min-h-screen items-center justify-center">
+          <p className="text-gray-400">Loading...</p>
         </div>
       )}
 
-      <div className="mx-auto max-w-lg px-4 py-6">
-        <div className="mb-4 flex items-center justify-between">
-          <h1 className="text-xl font-bold text-white">{session.name}</h1>
-          <StatusBadge status={session.status} size="sm" />
+      {!loading && (error || !session) && (
+        <div className="flex min-h-screen items-center justify-center px-4">
+          <p className="text-red-400">{error || "Session not found"}</p>
         </div>
+      )}
 
-        {session.status === "ended" && (
-          <div className="mb-4 rounded-lg border border-gray-500/30 bg-gray-500/10 p-4 text-center text-gray-400">
-            Session has ended
-          </div>
-        )}
+      {!loading && session && (
+        <>
+          {!audioUnlocked && (
+            <div
+              className="fixed inset-0 z-[100] flex flex-col items-center justify-center gap-4 bg-black/90 px-6"
+              style={{ touchAction: "manipulation" }}
+            >
+              <button
+                type="button"
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                  enableAudio();
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  enableAudio();
+                }}
+                className="min-h-[52px] min-w-[240px] cursor-pointer rounded-2xl bg-accent px-8 py-4 text-lg font-semibold text-black active:scale-95"
+                style={{
+                  touchAction: "manipulation",
+                  WebkitTapHighlightColor: "transparent",
+                }}
+              >
+                Tap to enable audio
+              </button>
+              <p className="max-w-xs text-center text-sm text-gray-400">
+                Required on mobile to play translated speech in real time
+              </p>
+            </div>
+          )}
 
-        <div className="mb-4 flex flex-wrap gap-2">
-          <span className="rounded-full border border-white/10 bg-card px-3 py-1 text-xs text-gray-300">
-            🌐 Multi-language (EN/ZH/JA/KO)
-          </span>
-          <span className="text-gray-500">→</span>
-          <span className="rounded-full border border-accent/30 bg-accent/10 px-3 py-1 text-xs text-accent">
-            {targetLang?.flag} {targetLang?.name}
-          </span>
-        </div>
+          <div className="mx-auto max-w-lg px-4 py-6">
+            <div className="mb-4 flex items-center justify-between">
+              <h1 className="text-xl font-bold text-white">{session.name}</h1>
+              <StatusBadge status={session.status} size="sm" />
+            </div>
 
-        <button
-          type="button"
-          onClick={toggleAudio}
-          className={`mb-2 w-full rounded-lg py-3 text-sm font-medium transition-colors ${
-            audioOn
-              ? "bg-accent/20 text-accent"
-              : "border border-white/10 text-gray-400"
-          }`}
-        >
-          {audioOn ? "🔊 Audio ON" : "🔇 Audio OFF"}
-        </button>
-        {audioUnlocked && (
-          <p className="mb-6 text-center text-xs text-gray-500">
-            {isPlaying
-              ? "Playing translation..."
-              : "Audio ready — new segments play automatically"}
-            {playError && (
-              <span className="mt-1 block text-amber-400">{playError}</span>
+            {session.status === "ended" && (
+              <div className="mb-4 rounded-lg border border-gray-500/30 bg-gray-500/10 p-4 text-center text-gray-400">
+                Session has ended
+              </div>
             )}
-          </p>
-        )}
 
-        <div className="space-y-3 pb-8">
-          {segments.map((seg) => (
-            <TranscriptSegment key={seg.id} segment={seg} variant="listener" />
-          ))}
+            <div className="mb-4 flex flex-wrap gap-2">
+              <span className="rounded-full border border-white/10 bg-card px-3 py-1 text-xs text-gray-300">
+                🌐 Multi-language (EN/ZH/JA/KO)
+              </span>
+              <span className="text-gray-500">→</span>
+              <span className="rounded-full border border-accent/30 bg-accent/10 px-3 py-1 text-xs text-accent">
+                {targetLang?.flag} {targetLang?.name}
+              </span>
+            </div>
 
-          {interimText && (
-            <InterimTranscript text={interimText} speakerId={interimSpeakerId} />
-          )}
+            <button
+              type="button"
+              onClick={toggleAudio}
+              className={`mb-2 w-full rounded-lg py-3 text-sm font-medium transition-colors ${
+                audioOn
+                  ? "bg-accent/20 text-accent"
+                  : "border border-white/10 text-gray-400"
+              }`}
+            >
+              {audioOn ? "🔊 Audio ON" : "🔇 Audio OFF"}
+            </button>
+            {audioUnlocked && (
+              <p className="mb-6 text-center text-xs text-gray-500">
+                {isPlaying
+                  ? "Playing translation..."
+                  : "Audio ready — new segments play automatically"}
+                {playError && (
+                  <span className="mt-1 block text-amber-400">{playError}</span>
+                )}
+              </p>
+            )}
 
-          {segments.length === 0 && !interimText && session.status !== "ended" && (
-            <p className="text-center text-gray-500">
-              Waiting for live captions...
-            </p>
-          )}
+            <div className="space-y-3 pb-8">
+              {segments.map((seg) => (
+                <TranscriptSegment
+                  key={seg.id}
+                  segment={seg}
+                  variant="listener"
+                  showPlayButton={!!seg.audio_base64}
+                  onPlay={playNow}
+                />
+              ))}
 
-          <div ref={segmentsEndRef} />
-        </div>
-      </div>
+              {interimText && (
+                <InterimTranscript
+                  text={interimText}
+                  speakerId={interimSpeakerId}
+                />
+              )}
+
+              {segments.length === 0 &&
+                !interimText &&
+                session.status !== "ended" && (
+                  <p className="text-center text-gray-500">
+                    Waiting for live captions...
+                  </p>
+                )}
+
+              <div ref={segmentsEndRef} />
+            </div>
+          </div>
+        </>
+      )}
     </main>
   );
 }

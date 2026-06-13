@@ -11,6 +11,8 @@ import OpenAI from "openai";
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 import { createClient } from "@supabase/supabase-js";
 import { buildListenerUrl, ensureUrlScheme } from "../lib/qrcode";
+import { resolveSourceLanguage } from "../lib/detect-language";
+import { translate, isMetaTranslation } from "../lib/translate";
 
 loadEnvConfig(process.cwd());
 
@@ -173,6 +175,35 @@ async function checkAiml() {
     ok(`AIML translate: "Hello" → "${text}"`);
   } catch (err) {
     fail("AIML API", err);
+  }
+}
+
+async function checkTranslationQuality() {
+  console.log("\n[4b] Translation quality");
+  try {
+    const lang = resolveSourceLanguage(
+      "sin 就 有",
+      [{ language: "ja" }],
+      "zh"
+    );
+    if (lang !== "zh") {
+      throw new Error(`CJK fragment should resolve to zh, got ${lang}`);
+    }
+    ok("resolveSourceLanguage: CJK+pinyin → zh (not ja)");
+
+    const fragment = await translate("sin 就 有", "zh", "zh");
+    if (isMetaTranslation(fragment)) {
+      throw new Error(`meta response for fragment: ${fragment}`);
+    }
+    ok(`translate fragment: "sin 就 有" → "${fragment}"`);
+
+    const mandarin = await translate("尋 在 想 在 想 在", "zh", "zh");
+    if (isMetaTranslation(mandarin)) {
+      throw new Error(`meta response for mandarin: ${mandarin}`);
+    }
+    ok(`translate mandarin fragment → "${mandarin}"`);
+  } catch (err) {
+    fail("Translation quality", err);
   }
 }
 
@@ -462,6 +493,7 @@ async function main() {
   await checkSupabase();
   await checkDeepgram();
   await checkAiml();
+  await checkTranslationQuality();
   await checkElevenLabs();
 
   const sessionId = await checkHttpRoutes();
