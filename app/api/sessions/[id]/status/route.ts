@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 import { updateSessionStatus } from "@/lib/supabase";
-import { emitToSession, getIO } from "@/server/socket";
+import { emitToSession } from "@/server/socket";
 import { closeSessionAudioConnections } from "@/server/audio-ws";
 import type { SessionStatus } from "@/types";
 
