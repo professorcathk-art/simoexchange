@@ -307,6 +307,15 @@ async function processFinalTranscript(
     seqNo,
     speakerId,
   });
+
+  if (audioBase64) {
+    emitToSession(sessionId, "segment_audio", {
+      sessionId,
+      segmentId: segment.id,
+      audioBase64,
+      seqNo,
+    });
+  }
 }
 
 function parseResult(result: Deepgram.listen.ListenV1Results) {

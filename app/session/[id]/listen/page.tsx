@@ -10,6 +10,8 @@ import { useTranslationPlayback } from "@/hooks/useTranslationPlayback";
 import StatusBadge from "@/components/StatusBadge";
 import TranscriptSegment, { InterimTranscript } from "@/components/TranscriptSegment";
 
+const POLL_MS = 1500;
+
 export default function ListenPage() {
   const params = useParams();
   const sessionId = params.id as string;
@@ -24,7 +26,7 @@ export default function ListenPage() {
 
   const segmentsEndRef = useRef<HTMLDivElement>(null);
   const registerSegmentRef = useRef<
-    (id: string, text: string | null, b64: string | null) => void
+    (id: string, text: string | null, b64: string | null, seq?: number) => void
   >(() => {});
 
   const targetLangCode = session?.target_lang ?? "zh";
@@ -35,14 +37,42 @@ export default function ListenPage() {
     isPlaying,
     volume,
     lastPlaySource,
+    queueLength,
     setVolume,
+    bindAudioElement,
     enableAudio,
     registerSegment,
+    flushAllPending,
     replaySegment,
     toggleAudio,
   } = useTranslationPlayback(targetLangCode);
 
   registerSegmentRef.current = registerSegment;
+
+  const syncSegmentsToPlayback = useCallback(
+    (list: Segment[]) => {
+      const ordered = [...list]
+        .sort((a, b) => a.seq_no - b.seq_no)
+        .filter((s) => s.translated_text || s.audio_base64);
+      for (const seg of ordered) {
+        registerSegment(
+          seg.id,
+          seg.translated_text,
+          seg.audio_base64,
+          seg.seq_no
+        );
+      }
+    },
+    [registerSegment]
+  );
+
+  const fetchSegments = useCallback(async () => {
+    const res = await fetch(`/api/sessions/${sessionId}/segments`);
+    if (!res.ok) return;
+    const data: Segment[] = await res.json();
+    setSegments(data);
+    syncSegmentsToPlayback(data);
+  }, [sessionId, syncSegmentsToPlayback]);
 
   useEffect(() => {
     Promise.all([
@@ -52,7 +82,10 @@ export default function ListenPage() {
       .then(async ([sessionRes, segmentsRes]) => {
         if (!sessionRes.ok) throw new Error("Session not found");
         setSession(await sessionRes.json());
-        if (segmentsRes.ok) setSegments(await segmentsRes.json());
+        if (segmentsRes.ok) {
+          const data = await segmentsRes.json();
+          setSegments(data);
+        }
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
@@ -98,6 +131,7 @@ export default function ListenPage() {
       segmentId: string;
       translatedText: string;
       audioBase64: string | null;
+      seqNo?: number;
     }) => {
       setSegments((prev) =>
         prev.map((s) =>
@@ -105,7 +139,7 @@ export default function ListenPage() {
             ? {
                 ...s,
                 translated_text: data.translatedText,
-                audio_base64: data.audioBase64,
+                audio_base64: data.audioBase64 ?? s.audio_base64,
               }
             : s
         )
@@ -113,7 +147,28 @@ export default function ListenPage() {
       registerSegmentRef.current(
         data.segmentId,
         data.translatedText,
-        data.audioBase64
+        data.audioBase64,
+        data.seqNo
+      );
+    };
+
+    const onSegmentAudio = (data: {
+      segmentId: string;
+      audioBase64: string;
+      seqNo?: number;
+    }) => {
+      setSegments((prev) =>
+        prev.map((s) =>
+          s.id === data.segmentId
+            ? { ...s, audio_base64: data.audioBase64 }
+            : s
+        )
+      );
+      registerSegmentRef.current(
+        data.segmentId,
+        null,
+        data.audioBase64,
+        data.seqNo
       );
     };
 
@@ -126,29 +181,28 @@ export default function ListenPage() {
     socket.on("transcript_interim", onInterim);
     socket.on("transcript_final", onFinal);
     socket.on("segment_update", onSegmentUpdate);
+    socket.on("segment_audio", onSegmentAudio);
     socket.on("session_status", onStatus);
 
     return () => {
       socket.off("transcript_interim", onInterim);
       socket.off("transcript_final", onFinal);
       socket.off("segment_update", onSegmentUpdate);
+      socket.off("segment_audio", onSegmentAudio);
       socket.off("session_status", onStatus);
     };
   }, [sessionId]);
 
-  const drainSegments = useCallback(() => {
-    const ordered = [...segments]
-      .sort((a, b) => a.seq_no - b.seq_no)
-      .filter((s) => s.translated_text || s.audio_base64);
-    for (const seg of ordered) {
-      registerSegment(seg.id, seg.translated_text, seg.audio_base64);
-    }
-  }, [segments, registerSegment]);
+  useEffect(() => {
+    if (!unlocked) return;
+    syncSegmentsToPlayback(segments);
+  }, [unlocked, segments, syncSegmentsToPlayback]);
 
   useEffect(() => {
     if (!unlocked) return;
-    drainSegments();
-  }, [unlocked, segments, drainSegments]);
+    const id = setInterval(() => void fetchSegments(), POLL_MS);
+    return () => clearInterval(id);
+  }, [unlocked, fetchSegments]);
 
   useEffect(() => {
     segmentsEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -158,8 +212,23 @@ export default function ListenPage() {
     ? LANGUAGES.find((l) => l.code === session.target_lang)
     : null;
 
+  const handleStartListening = () => {
+    enableAudio();
+    flushAllPending();
+    void fetchSegments();
+  };
+
   return (
     <main className="relative min-h-screen bg-background">
+      {/* Must stay mounted — iOS unlocks THIS element on tap */}
+      <audio
+        ref={bindAudioElement}
+        playsInline
+        preload="auto"
+        className="pointer-events-none fixed left-0 top-0 h-px w-px opacity-[0.01]"
+        aria-hidden
+      />
+
       {loading && (
         <div className="flex min-h-screen items-center justify-center">
           <p className="text-gray-400">Loading...</p>
@@ -184,13 +253,11 @@ export default function ListenPage() {
                 onTouchStart={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  enableAudio();
-                  drainSegments();
+                  handleStartListening();
                 }}
                 onClick={(e) => {
                   e.stopPropagation();
-                  enableAudio();
-                  drainSegments();
+                  handleStartListening();
                 }}
                 className="min-h-[52px] min-w-[260px] cursor-pointer rounded-2xl bg-accent px-8 py-4 text-lg font-semibold text-black active:scale-95"
                 style={{
@@ -201,8 +268,7 @@ export default function ListenPage() {
                 Tap to start listening
               </button>
               <p className="max-w-sm text-center text-sm text-gray-400">
-                Required once on mobile. Translations will play automatically like
-                a simultaneous interpreter.
+                Tap once. Every new translation plays automatically in order.
               </p>
             </div>
           )}
@@ -244,8 +310,10 @@ export default function ListenPage() {
             {unlocked && (
               <p className="mb-3 text-center text-xs text-gray-500">
                 {isPlaying
-                  ? `Playing translation${lastPlaySource === "speech" ? " (device voice)" : ""}...`
-                  : "Ready — new translations play automatically"}
+                  ? `Playing${lastPlaySource === "speech" ? " (device voice)" : ""}...`
+                  : queueLength > 0
+                    ? `${queueLength} translation(s) queued`
+                    : "Listening — translations play automatically"}
               </p>
             )}
 

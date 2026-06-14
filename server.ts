@@ -41,6 +41,7 @@ app.prepare().then(() => {
   const io = new SocketIOServer(httpServer, {
     cors: { origin: "*", methods: ["GET", "POST"] },
     path: "/socket.io",
+    maxHttpBufferSize: 5e6,
   });
 
   setIO(io);

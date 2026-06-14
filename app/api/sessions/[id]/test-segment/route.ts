@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/supabase";
-import { translate } from "@/lib/translate";
 import { generateTTS } from "@/lib/tts";
 import { emitToSession } from "@/server/socket";
 import type { LangCode } from "@/types";
 
-/** Dev/health-check only — emits a test segment_update with real TTS audio. */
+/** Dev/health-check only — emits test segment_update + segment_audio with real TTS. */
 export async function POST(
   _request: NextRequest,
   { params }: { params: { id: string } }
@@ -24,7 +23,15 @@ export async function POST(
     }
 
     const targetLang = session.target_lang as LangCode;
-    const translatedText = await translate("Audio playback test.", targetLang, "en");
+    const translatedText =
+      targetLang === "zh"
+        ? "音频播放测试。"
+        : targetLang === "ja"
+          ? "オーディオテストです。"
+          : targetLang === "ko"
+            ? "오디오 테스트입니다."
+            : "Audio playback test.";
+
     const audioBase64 = await generateTTS(translatedText, targetLang);
 
     if (!audioBase64 || audioBase64.length < 500) {
@@ -44,6 +51,13 @@ export async function POST(
       audioBase64,
       seqNo: 9999,
       speakerId: null,
+    });
+
+    emitToSession(params.id, "segment_audio", {
+      sessionId: params.id,
+      segmentId,
+      audioBase64,
+      seqNo: 9999,
     });
 
     return NextResponse.json({

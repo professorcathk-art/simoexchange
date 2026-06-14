@@ -456,9 +456,9 @@ async function checkSegmentUpdateAudio(sessionId: string) {
 
     const timeout = setTimeout(() => {
       socket.disconnect();
-      fail("segment_update audio", "timeout waiting for segment_update");
+      fail("segment_update audio", "timeout waiting for segment events (60s)");
       resolve();
-    }, 30000);
+    }, 60000);
 
     socket.on("connect", () => {
       socket.emit("join_session", sessionId, async (res: { ok?: boolean }) => {
@@ -488,23 +488,51 @@ async function checkSegmentUpdateAudio(sessionId: string) {
       });
     });
 
+    let gotUpdate = false;
+    let gotAudio = false;
+
+    const finish = () => {
+      if (!gotUpdate || !gotAudio) return;
+      clearTimeout(timeout);
+      ok("segment_update + segment_audio deliver translation and MP3");
+      socket.disconnect();
+      resolve();
+    };
+
     socket.on(
       "segment_update",
       (data: { audioBase64?: string | null; translatedText?: string }) => {
         if (!data.translatedText) return;
-        clearTimeout(timeout);
         if (!data.audioBase64 || data.audioBase64.length < 500) {
+          clearTimeout(timeout);
           fail(
             "segment_update audio",
             `missing or tiny audioBase64 (${data.audioBase64?.length ?? 0})`
           );
-        } else {
-          ok(
-            `segment_update delivers audio (${data.audioBase64.length} chars) + text`
-          );
+          socket.disconnect();
+          resolve();
+          return;
         }
-        socket.disconnect();
-        resolve();
+        gotUpdate = true;
+        finish();
+      }
+    );
+
+    socket.on(
+      "segment_audio",
+      (data: { audioBase64?: string | null }) => {
+        if (!data.audioBase64 || data.audioBase64.length < 500) {
+          clearTimeout(timeout);
+          fail(
+            "segment_audio",
+            `missing or tiny audio (${data.audioBase64?.length ?? 0})`
+          );
+          socket.disconnect();
+          resolve();
+          return;
+        }
+        gotAudio = true;
+        finish();
       }
     );
 

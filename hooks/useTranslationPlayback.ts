@@ -7,28 +7,39 @@ import {
   primeSpeechInGesture,
   SpeechQueue,
 } from "@/lib/speech-synthesis";
-import { SILENT_MP3_DATA_URL, unlockWithAudioContextSync } from "@/lib/audio-playback";
+import {
+  base64ToBlobUrl,
+  prepareMobileAudioElement,
+  SILENT_MP3_DATA_URL,
+  unlockWithAudioContextSync,
+} from "@/lib/audio-playback";
 
 interface SegmentAudio {
   text: string;
   audioBase64: string | null;
+  seqNo: number;
+}
+
+interface Mp3QueueItem {
+  b64: string;
+  text: string;
 }
 
 /**
- * Reliable translation playback for the listener page.
- *
- * Primary: server TTS MP3 via HTML5 Audio (works from async Socket.io after one tap unlock).
- * Fallback: browser Speech Synthesis when audioBase64 is missing.
+ * Continuous translation playback using ONE persistent <audio> element.
+ * iOS requires the same element unlocked in a tap gesture, then reused for every clip.
  */
 export function useTranslationPlayback(targetLang: LangCode) {
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
   const unlockedRef = useRef(false);
   const audioOnRef = useRef(true);
   const volumeRef = useRef(1);
-  const mp3QueueRef = useRef<string[]>([]);
+  const mp3QueueRef = useRef<Mp3QueueItem[]>([]);
   const playingRef = useRef(false);
-  const playedIdsRef = useRef(new Set<string>());
+  const playedMp3IdsRef = useRef(new Set<string>());
+  const playedSpeechIdsRef = useRef(new Set<string>());
   const pendingRef = useRef<Map<string, SegmentAudio>>(new Map());
-  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const currentBlobUrlRef = useRef<string | null>(null);
   const speechQueueRef = useRef<SpeechQueue | null>(null);
 
   const [unlocked, setUnlocked] = useState(false);
@@ -38,6 +49,7 @@ export function useTranslationPlayback(targetLang: LangCode) {
   const [lastPlaySource, setLastPlaySource] = useState<"mp3" | "speech" | null>(
     null
   );
+  const [queueLength, setQueueLength] = useState(0);
 
   if (!speechQueueRef.current) {
     speechQueueRef.current = new SpeechQueue(targetLang);
@@ -49,46 +61,18 @@ export function useTranslationPlayback(targetLang: LangCode) {
 
   useEffect(() => {
     volumeRef.current = volume;
-    if (currentAudioRef.current) {
-      currentAudioRef.current.volume = volume;
-    }
+    if (audioElRef.current) audioElRef.current.volume = volume;
   }, [volume]);
 
-  const playNextMp3 = useCallback(() => {
-    if (playingRef.current || !unlockedRef.current || !audioOnRef.current) return;
+  const revokeBlob = useCallback(() => {
+    if (currentBlobUrlRef.current) {
+      URL.revokeObjectURL(currentBlobUrlRef.current);
+      currentBlobUrlRef.current = null;
+    }
+  }, []);
 
-    const b64 = mp3QueueRef.current.shift();
-    if (!b64) return;
-
-    playingRef.current = true;
-    setIsPlaying(true);
-    setLastPlaySource("mp3");
-
-    currentAudioRef.current?.pause();
-
-    const audio = new Audio(`data:audio/mp3;base64,${b64}`);
-    audio.volume = volumeRef.current;
-    currentAudioRef.current = audio;
-
-    audio.onended = () => {
-      playingRef.current = false;
-      setIsPlaying(false);
-      playNextMp3();
-    };
-
-    audio.onerror = () => {
-      console.error("MP3 playback error");
-      playingRef.current = false;
-      setIsPlaying(false);
-      playNextMp3();
-    };
-
-    audio.play().catch((err) => {
-      console.error("MP3 play() blocked:", err);
-      playingRef.current = false;
-      setIsPlaying(false);
-      playNextMp3();
-    });
+  const updateQueueLength = useCallback(() => {
+    setQueueLength(mp3QueueRef.current.length);
   }, []);
 
   const speakFallback = useCallback((text: string) => {
@@ -98,49 +82,123 @@ export function useTranslationPlayback(targetLang: LangCode) {
     speechQueueRef.current?.enqueue(text);
   }, []);
 
+  const playNextMp3 = useCallback(() => {
+    const audio = audioElRef.current;
+    if (!audio || playingRef.current || !unlockedRef.current || !audioOnRef.current) {
+      return;
+    }
+
+    const item = mp3QueueRef.current.shift();
+    updateQueueLength();
+    if (!item) return;
+
+    playingRef.current = true;
+    setIsPlaying(true);
+    setLastPlaySource("mp3");
+
+    revokeBlob();
+    const url = base64ToBlobUrl(item.b64);
+    currentBlobUrlRef.current = url;
+
+    audio.src = url;
+    audio.volume = volumeRef.current;
+
+    const onEnded = () => {
+      cleanup();
+      playingRef.current = false;
+      setIsPlaying(false);
+      playNextMp3();
+    };
+
+    const onError = () => {
+      cleanup();
+      playingRef.current = false;
+      setIsPlaying(false);
+      if (isSpeakableText(item.text)) speakFallback(item.text);
+      playNextMp3();
+    };
+
+    const cleanup = () => {
+      audio.removeEventListener("ended", onEnded);
+      audio.removeEventListener("error", onError);
+    };
+
+    audio.addEventListener("ended", onEnded);
+    audio.addEventListener("error", onError);
+
+    void audio.play().catch((err) => {
+      console.error("MP3 play() blocked:", err);
+      onError();
+    });
+  }, [revokeBlob, speakFallback, updateQueueLength]);
+
   const tryPlaySegment = useCallback(
     (segmentId: string) => {
       if (!unlockedRef.current || !audioOnRef.current) return;
-      if (playedIdsRef.current.has(segmentId)) return;
 
       const pending = pendingRef.current.get(segmentId);
       if (!pending) return;
 
       const { text, audioBase64 } = pending;
-      if (!audioBase64 && !isSpeakableText(text)) return;
 
-      playedIdsRef.current.add(segmentId);
-
-      if (audioBase64) {
-        mp3QueueRef.current.push(audioBase64);
+      if (audioBase64 && !playedMp3IdsRef.current.has(segmentId)) {
+        playedMp3IdsRef.current.add(segmentId);
+        mp3QueueRef.current.push({ b64: audioBase64, text });
+        updateQueueLength();
         playNextMp3();
-      } else {
+        return;
+      }
+
+      if (
+        !audioBase64 &&
+        isSpeakableText(text) &&
+        !playedSpeechIdsRef.current.has(segmentId)
+      ) {
+        playedSpeechIdsRef.current.add(segmentId);
         speakFallback(text);
       }
     },
-    [playNextMp3, speakFallback]
+    [playNextMp3, speakFallback, updateQueueLength]
   );
 
   const registerSegment = useCallback(
-    (segmentId: string, text: string | null, audioBase64: string | null) => {
+    (
+      segmentId: string,
+      text: string | null,
+      audioBase64: string | null,
+      seqNo = 0
+    ) => {
+      const existing = pendingRef.current.get(segmentId);
       pendingRef.current.set(segmentId, {
-        text: text ?? "",
-        audioBase64,
+        text: text ?? existing?.text ?? "",
+        audioBase64: audioBase64 ?? existing?.audioBase64 ?? null,
+        seqNo: seqNo || existing?.seqNo || 0,
       });
       tryPlaySegment(segmentId);
     },
     [tryPlaySegment]
   );
 
+  const flushAllPending = useCallback(() => {
+    const ordered = Array.from(pendingRef.current.entries()).sort(
+      (a, b) => a[1].seqNo - b[1].seqNo
+    );
+    for (const [id] of ordered) {
+      tryPlaySegment(id);
+    }
+  }, [tryPlaySegment]);
+
+  const bindAudioElement = useCallback((el: HTMLAudioElement | null) => {
+    if (el) prepareMobileAudioElement(el);
+    audioElRef.current = el;
+  }, []);
+
   const enableAudio = useCallback(() => {
-    if (unlockedRef.current) return;
+    const audio = audioElRef.current;
+    if (!audio || unlockedRef.current) return;
 
     unlockWithAudioContextSync();
-
-    const silent = new Audio(SILENT_MP3_DATA_URL);
-    silent.volume = 0.01;
-    void silent.play().then(() => silent.pause()).catch(() => {});
-
+    prepareMobileAudioElement(audio);
     primeSpeechInGesture();
     speechQueueRef.current?.enable();
 
@@ -148,20 +206,40 @@ export function useTranslationPlayback(targetLang: LangCode) {
     audioOnRef.current = true;
     setUnlocked(true);
     setAudioOn(true);
-  }, []);
+
+    const startPlayback = () => {
+      audio.volume = volumeRef.current;
+      flushAllPending();
+      playNextMp3();
+    };
+
+    audio.src = SILENT_MP3_DATA_URL;
+    audio.volume = 0.01;
+
+    const promise = audio.play();
+    if (promise) {
+      promise
+        .then(() => {
+          audio.pause();
+          audio.currentTime = 0;
+          startPlayback();
+        })
+        .catch(() => startPlayback());
+    } else {
+      startPlayback();
+    }
+  }, [flushAllPending, playNextMp3]);
 
   const replaySegment = useCallback(
     (_segmentId: string, text: string | null, audioBase64: string | null) => {
-      if (!unlockedRef.current) {
-        enableAudio();
-      }
+      if (!unlockedRef.current) enableAudio();
 
       playingRef.current = false;
-      currentAudioRef.current?.pause();
       speechQueueRef.current?.stop();
 
       if (audioBase64) {
-        mp3QueueRef.current.unshift(audioBase64);
+        mp3QueueRef.current.unshift({ b64: audioBase64, text: text ?? "" });
+        updateQueueLength();
         playNextMp3();
         return;
       }
@@ -171,7 +249,7 @@ export function useTranslationPlayback(targetLang: LangCode) {
         speechQueueRef.current?.replay(text!);
       }
     },
-    [enableAudio, playNextMp3]
+    [enableAudio, playNextMp3, updateQueueLength]
   );
 
   const toggleAudio = useCallback(() => {
@@ -180,15 +258,16 @@ export function useTranslationPlayback(targetLang: LangCode) {
       audioOnRef.current = next;
       if (!next) {
         playingRef.current = false;
-        currentAudioRef.current?.pause();
+        audioElRef.current?.pause();
         speechQueueRef.current?.stop();
         setIsPlaying(false);
       } else if (unlockedRef.current) {
+        flushAllPending();
         playNextMp3();
       }
       return next;
     });
-  }, [playNextMp3]);
+  }, [flushAllPending, playNextMp3]);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -200,11 +279,12 @@ export function useTranslationPlayback(targetLang: LangCode) {
 
   useEffect(() => {
     return () => {
-      currentAudioRef.current?.pause();
+      audioElRef.current?.pause();
       speechQueueRef.current?.stop();
       mp3QueueRef.current = [];
+      revokeBlob();
     };
-  }, []);
+  }, [revokeBlob]);
 
   return {
     unlocked,
@@ -212,9 +292,12 @@ export function useTranslationPlayback(targetLang: LangCode) {
     isPlaying,
     volume,
     lastPlaySource,
+    queueLength,
     setVolume,
+    bindAudioElement,
     enableAudio,
     registerSegment,
+    flushAllPending,
     replaySegment,
     toggleAudio,
   };
