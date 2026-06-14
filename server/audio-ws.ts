@@ -275,6 +275,16 @@ async function processFinalTranscript(
     speakerId,
   });
 
+  emitToSession(sessionId, "segment_update", {
+    sessionId,
+    segmentId: segment.id,
+    sourceText: text,
+    translatedText: "Translating...",
+    audioBase64: null,
+    seqNo,
+    speakerId,
+  });
+
   let translatedText = "[Translation unavailable]";
   let audioBase64: string | null = null;
 
@@ -282,9 +292,12 @@ async function processFinalTranscript(
     const sourceLang = resolveSourceLanguage(text, words, sessionSourceLang);
     translatedText = await translate(text, targetLang, sourceLang);
     if (!translatedText) translatedText = "[Translation unavailable]";
-    trackTranslation(sessionId, text.length);
+    if (translatedText !== "[Translation unavailable]") {
+      trackTranslation(sessionId, text.length);
+    }
   } catch (err) {
     console.error("Translation error:", err);
+    translatedText = "[Translation unavailable]";
   }
 
   try {

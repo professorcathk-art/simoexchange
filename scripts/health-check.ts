@@ -159,24 +159,23 @@ async function checkDeepgram() {
 async function checkAiml() {
   console.log("\n[4] AIML API (translation)");
   try {
-    const client = new OpenAI({
-      apiKey: process.env.AIML_API_KEY!,
-      baseURL: "https://api.aimlapi.com/v1",
-    });
-    const res = await client.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: "Translate to Chinese. Output only translation." },
-        { role: "user", content: "Hello" },
-      ],
-      max_tokens: 50,
-    });
-    const text = res.choices[0]?.message?.content?.trim();
+    const text = await withTimeout(
+      translate("Hello", "zh", "en"),
+      45000,
+      "translate Hello→ZH"
+    );
     if (!text) throw new Error("empty response");
-    ok(`AIML translate: "Hello" → "${text}"`);
+    if (!/[\u4e00-\u9fff]/.test(text)) {
+      throw new Error(`expected Chinese output, got: ${text}`);
+    }
+    ok(`translate: "Hello" → "${text}"`);
   } catch (err) {
     fail("AIML API", err);
   }
+}
+
+function looksLikeEnglishOnly(text: string): boolean {
+  return /[a-zA-Z]/.test(text) && !/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(text);
 }
 
 async function checkTranslationQuality() {
@@ -192,13 +191,34 @@ async function checkTranslationQuality() {
     }
     ok("resolveSourceLanguage: CJK+pinyin → zh (not ja)");
 
-    const fragment = await translate("sin 就 有", "zh", "zh");
+    const enToZh = await withTimeout(
+      translate("Hello, hello. This is a test.", "zh", "en"),
+      45000,
+      "EN→ZH translate"
+    );
+    if (isMetaTranslation(enToZh)) {
+      throw new Error(`meta response for EN→ZH: ${enToZh}`);
+    }
+    if (looksLikeEnglishOnly(enToZh)) {
+      throw new Error(`EN→ZH returned untranslated English: ${enToZh}`);
+    }
+    ok(`EN→ZH: "Hello, hello..." → "${enToZh}"`);
+
+    const fragment = await withTimeout(
+      translate("sin 就 有", "zh", "zh"),
+      30000,
+      "translate fragment"
+    );
     if (isMetaTranslation(fragment)) {
       throw new Error(`meta response for fragment: ${fragment}`);
     }
     ok(`translate fragment: "sin 就 有" → "${fragment}"`);
 
-    const mandarin = await translate("尋 在 想 在 想 在", "zh", "zh");
+    const mandarin = await withTimeout(
+      translate("尋 在 想 在 想 在", "zh", "zh"),
+      30000,
+      "translate mandarin"
+    );
     if (isMetaTranslation(mandarin)) {
       throw new Error(`meta response for mandarin: ${mandarin}`);
     }
@@ -211,7 +231,11 @@ async function checkTranslationQuality() {
 async function checkTtsPipeline() {
   console.log("\n[5b] TTS pipeline (translate → speech audio)");
   try {
-    const translated = await translate("Hello, this is a test.", "zh", "en");
+    const translated = await withTimeout(
+      translate("Hello, this is a test.", "zh", "en"),
+      30000,
+      "TTS pipeline translate"
+    );
     if (!translated) throw new Error("empty translation");
     const b64 = await generateTTS(translated, "zh");
     if (!b64 || b64.length < 500) {

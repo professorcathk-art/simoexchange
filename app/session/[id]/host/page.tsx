@@ -304,7 +304,7 @@ export default function HostPage() {
                 <TranscriptSegment
                   key={seg.id}
                   segment={seg}
-                  variant="host"
+                  variant="translation-only"
                   showPlayButton
                   onPlay={(audio) => play(audio)}
                 />

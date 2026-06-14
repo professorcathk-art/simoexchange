@@ -7,7 +7,7 @@ interface TranscriptSegmentProps {
   segment: Segment;
   showPlayButton?: boolean;
   onPlay?: (audioBase64: string) => void;
-  variant?: "host" | "listener";
+  variant?: "host" | "listener" | "translation-only";
 }
 
 function SpeakerBadge({ speakerId }: { speakerId: number | null | undefined }) {
@@ -27,6 +27,29 @@ export default function TranscriptSegment({
   onPlay,
   variant = "listener",
 }: TranscriptSegmentProps) {
+  if (variant === "translation-only") {
+    return (
+      <div className="rounded-lg border border-white/5 bg-white/5 p-3">
+        <div className="mb-1">
+          <SpeakerBadge speakerId={segment.speaker_id} />
+        </div>
+        <p className="text-sm text-accent">
+          {segment.translated_text || "Translating..."}
+        </p>
+        {showPlayButton && segment.audio_base64 && onPlay && (
+          <button
+            type="button"
+            onClick={() => onPlay(segment.audio_base64!)}
+            className="mt-2 shrink-0 rounded p-1 text-accent hover:bg-accent/10"
+            aria-label="Play audio"
+          >
+            ▶
+          </button>
+        )}
+      </div>
+    );
+  }
+
   if (variant === "host") {
     return (
       <div className="rounded-lg border border-white/5 bg-white/5 p-3">
