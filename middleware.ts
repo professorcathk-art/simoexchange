@@ -9,17 +9,32 @@ function isPublicPath(pathname: string): boolean {
   if (pathname.startsWith("/api")) return true;
   if (pathname.startsWith("/_next")) return true;
   if (pathname === "/favicon.ico") return true;
-  // Audience listener pages — no password required
   if (/^\/session\/[^/]+\/listen\/?$/.test(pathname)) return true;
   if (/^\/session\/[^/]+\/audio-out\/?$/.test(pathname)) return true;
   return false;
 }
 
+function noCache(res: NextResponse): NextResponse {
+  res.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.headers.set("Pragma", "no-cache");
+  res.headers.set("Expires", "0");
+  return res;
+}
+
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  if (isPublicPath(pathname)) return NextResponse.next();
-
   const authed = request.cookies.get(ACCESS_COOKIE)?.value === "1";
+
+  // Logged-in users visiting / go straight to the dashboard
+  if (pathname === "/" && authed) {
+    return NextResponse.redirect(new URL("/app", request.url));
+  }
+
+  if (isPublicPath(pathname)) {
+    if (pathname === "/") return noCache(NextResponse.next());
+    return NextResponse.next();
+  }
+
   if (authed) return NextResponse.next();
 
   const loginUrl = request.nextUrl.clone();
