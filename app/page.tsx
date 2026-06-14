@@ -1,9 +1,11 @@
-import LandingPage from "@/components/LandingPage";
+import { redirect } from "next/navigation";
+import { cookies } from "next/headers";
+import { ACCESS_COOKIE } from "@/lib/auth";
 
-// Never statically cache the landing page — avoids stale dashboard HTML on CDN
 export const dynamic = "force-dynamic";
-export const revalidate = 0;
 
-export default function HomePage() {
-  return <LandingPage />;
+/** Root always redirects — never serve a page here (avoids stale cached dashboard HTML). */
+export default function RootPage() {
+  const authed = cookies().get(ACCESS_COOKIE)?.value === "1";
+  redirect(authed ? "/app" : "/enter");
 }

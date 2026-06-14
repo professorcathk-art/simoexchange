@@ -295,15 +295,33 @@ async function checkHttpRoutes() {
   console.log("\n[6] HTTP routes (server must be running)");
 
   try {
-    const home = await fetch(`${BASE}/`);
-    const homeText = await home.text();
-    if (home.status !== 200) throw new Error(`GET / → ${home.status}`);
-    if (!homeText.includes("SimoExchange")) {
+    const root = await fetch(`${BASE}/`, { redirect: "manual" });
+    if (root.status !== 307 && root.status !== 308) {
+      throw new Error(`GET / expected redirect, got ${root.status}`);
+    }
+    const loc = root.headers.get("location") ?? "";
+    if (!loc.includes("/enter")) {
+      throw new Error(`GET / should redirect to /enter, got ${loc}`);
+    }
+    ok("GET / → redirects to /enter");
+  } catch (err) {
+    fail("GET / redirect", err);
+    return null;
+  }
+
+  try {
+    const enter = await fetch(`${BASE}/enter`);
+    const enterText = await enter.text();
+    if (enter.status !== 200) throw new Error(`GET /enter → ${enter.status}`);
+    if (!enterText.includes("SimoExchange")) {
       throw new Error("landing page missing SimoExchange branding");
     }
-    ok(`GET / landing → ${home.status}`);
+    if (!enterText.includes("Enter access password")) {
+      throw new Error("landing page missing password box");
+    }
+    ok(`GET /enter landing → ${enter.status}`);
   } catch (err) {
-    fail("GET /", err);
+    fail("GET /enter", err);
     return null;
   }
 
@@ -324,7 +342,11 @@ async function checkHttpRoutes() {
     if (blocked.status !== 307 && blocked.status !== 308) {
       throw new Error(`expected redirect from /app, got ${blocked.status}`);
     }
-    ok("GET /app without auth → redirect");
+    const appLoc = blocked.headers.get("location") ?? "";
+    if (!appLoc.includes("/enter")) {
+      throw new Error(`expected redirect to /enter, got ${appLoc}`);
+    }
+    ok("GET /app without auth → redirect to /enter");
   } catch (err) {
     fail("Auth gate /app", err);
   }

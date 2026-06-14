@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { ACCESS_COOKIE } from "@/lib/auth";
 
-const PUBLIC_EXACT = new Set(["/", "/contact", "/privacy", "/terms"]);
+const PUBLIC_EXACT = new Set(["/enter", "/contact", "/privacy", "/terms"]);
 
 function isPublicPath(pathname: string): boolean {
   if (PUBLIC_EXACT.has(pathname)) return true;
@@ -14,31 +14,24 @@ function isPublicPath(pathname: string): boolean {
   return false;
 }
 
-function noCache(res: NextResponse): NextResponse {
-  res.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-  res.headers.set("Pragma", "no-cache");
-  res.headers.set("Expires", "0");
-  return res;
-}
-
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const authed = request.cookies.get(ACCESS_COOKIE)?.value === "1";
 
-  // Logged-in users visiting / go straight to the dashboard
-  if (pathname === "/" && authed) {
-    return NextResponse.redirect(new URL("/app", request.url));
+  // Never serve HTML at / — always redirect (fixes stale CDN cache of old dashboard)
+  if (pathname === "/") {
+    const dest = authed ? "/app" : "/enter";
+    return NextResponse.redirect(new URL(dest, request.url));
   }
 
   if (isPublicPath(pathname)) {
-    if (pathname === "/") return noCache(NextResponse.next());
     return NextResponse.next();
   }
 
   if (authed) return NextResponse.next();
 
   const loginUrl = request.nextUrl.clone();
-  loginUrl.pathname = "/";
+  loginUrl.pathname = "/enter";
   loginUrl.searchParams.set("redirect", pathname);
   return NextResponse.redirect(loginUrl);
 }
