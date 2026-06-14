@@ -17,8 +17,16 @@ export async function loadGlossaryPrompt(
   sourceLang?: LangCode,
   targetLang?: LangCode
 ): Promise<string> {
-  const terms = await getGlossaryTerms(sourceLang, targetLang);
-  return formatGlossaryForPrompt(terms);
+  try {
+    const terms = await getGlossaryTerms(sourceLang, targetLang);
+    return formatGlossaryForPrompt(terms);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("table missing")) {
+      return "";
+    }
+    throw err;
+  }
 }
 
 export function filterGlossaryForLangs(

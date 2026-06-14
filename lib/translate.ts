@@ -92,7 +92,13 @@ export function isMetaTranslation(text: string): boolean {
   const t = text.trim();
   if (t.length < 4) return false;
   if (META_PATTERNS.some((p) => p.test(t))) return true;
-  if (/[？?]$/.test(t) && /请|什么|吗|呢|could|would/i.test(t)) return true;
+  // Meta-requests that ask the user for more input (not normal translated questions)
+  if (
+    /[？?]$/.test(t) &&
+    /请提供|请问|能否|可以.*吗|would you|could you|please provide|please give/i.test(t)
+  ) {
+    return true;
+  }
   return false;
 }
 

@@ -223,6 +223,27 @@ async function checkTranslationQuality() {
       throw new Error(`meta response for mandarin: ${mandarin}`);
     }
     ok(`translate mandarin fragment → "${mandarin}"`);
+
+    const mickey = await withTimeout(
+      translate("Hello, testing. This is Mickey. How are you?", "zh", "en"),
+      30_000,
+      "Mickey test phrase"
+    );
+    if (mickey === "[Translation unavailable]") {
+      throw new Error("Mickey test phrase returned unavailable");
+    }
+    if (isMetaTranslation(mickey)) {
+      throw new Error(`Mickey phrase flagged as meta: ${mickey}`);
+    }
+    if (!/[\u4e00-\u9fff]/.test(mickey)) {
+      throw new Error(`Mickey phrase not Chinese: ${mickey}`);
+    }
+    ok(`EN→ZH Mickey phrase → "${mickey}"`);
+
+    if (isMetaTranslation("你好吗？")) {
+      throw new Error("isMetaTranslation false-positive on 你好吗？");
+    }
+    ok("isMetaTranslation: normal Chinese questions not flagged");
   } catch (err) {
     fail("Translation quality", err);
   }
