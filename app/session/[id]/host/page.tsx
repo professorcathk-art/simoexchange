@@ -15,6 +15,8 @@ import VadStateIndicator from "@/components/VadStateIndicator";
 import ApiUsagePanel from "@/components/ApiUsagePanel";
 import TranscriptPolishPanel from "@/components/TranscriptPolishPanel";
 import { useHostRecording } from "@/hooks/useHostRecording";
+import { mergeSegments, downloadTextFile } from "@/lib/segment-merge";
+import { segmentsToRawTranscript } from "@/lib/transcript-format";
 
 export default function HostPage() {
   const params = useParams();
@@ -47,8 +49,17 @@ export default function HostPage() {
   } = useHostRecording(sessionId);
 
   const loadSegments = useCallback(async () => {
-    const segmentsRes = await fetch(`/api/sessions/${sessionId}/segments`);
-    if (segmentsRes.ok) setSegments(await segmentsRes.json());
+    try {
+      const segmentsRes = await fetch(
+        `/api/sessions/${sessionId}/segments`,
+        { cache: "no-store" }
+      );
+      if (!segmentsRes.ok) return;
+      const fromDb: Segment[] = await segmentsRes.json();
+      setSegments((prev) => mergeSegments(prev, fromDb));
+    } catch (err) {
+      console.error("Failed to load segments:", err);
+    }
   }, [sessionId]);
 
   const loadSession = useCallback(async () => {
@@ -115,17 +126,35 @@ export default function HostPage() {
       seqNo: number;
       speakerId?: number | null;
     }) => {
-      setSegments((prev) =>
-        prev.map((s) =>
-          s.id === data.segmentId
-            ? {
-                ...s,
-                translated_text: data.translatedText,
-                audio_base64: data.audioBase64,
-              }
-            : s
-        )
-      );
+      setSegments((prev) => {
+        const idx = prev.findIndex((s) => s.id === data.segmentId);
+        if (idx >= 0) {
+          return prev.map((s) =>
+            s.id === data.segmentId
+              ? {
+                  ...s,
+                  source_text: data.sourceText || s.source_text,
+                  translated_text: data.translatedText,
+                  audio_base64: data.audioBase64,
+                }
+              : s
+          );
+        }
+        return [
+          ...prev,
+          {
+            id: data.segmentId,
+            session_id: sessionId,
+            seq_no: data.seqNo,
+            source_text: data.sourceText,
+            is_final: true,
+            translated_text: data.translatedText,
+            audio_base64: data.audioBase64,
+            speaker_id: data.speakerId ?? null,
+            created_at: new Date().toISOString(),
+          },
+        ];
+      });
     });
 
     socket.on("session_status", (data: { status: string }) => {
@@ -189,6 +218,15 @@ export default function HostPage() {
 
     await updateStatus("ended");
     await loadSegments();
+  };
+
+  const downloadLiveTranscript = () => {
+    if (segments.length === 0) return;
+    const text = segmentsToRawTranscript(segments);
+    downloadTextFile(
+      `${session?.name ?? "session"}-live-transcript.txt`,
+      text
+    );
   };
 
   const displayError = pageError || recordingError;
@@ -290,15 +328,29 @@ export default function HostPage() {
 
           {session.status === "ended" && (
             <p className="rounded-lg border border-green-500/20 bg-green-500/5 px-3 py-2 text-xs text-green-400">
-              Session ended — transcript saved to database
+              Session ended
+              {segments.length > 0
+                ? ` — ${segments.length} segment${segments.length === 1 ? "" : "s"} saved`
+                : " — no speech was captured"}
             </p>
           )}
 
-          {session.status === "ended" && segments.length > 0 && (
+          {session.status === "ended" && (
             <TranscriptPolishPanel
               sessionId={sessionId}
-              title="Professional Transcript"
+              title="AI Professional Transcript"
+              showGenerateButton={segments.length > 0}
             />
+          )}
+
+          {session.status === "ended" && segments.length > 0 && (
+            <button
+              type="button"
+              onClick={downloadLiveTranscript}
+              className="w-full rounded-lg border border-white/15 py-2.5 text-sm text-gray-300 hover:border-accent/40 hover:text-accent"
+            >
+              Download live transcript (.txt)
+            </button>
           )}
 
           <ApiUsagePanel usage={apiUsage} lowPowerMode={lowPowerMode} />
@@ -310,7 +362,9 @@ export default function HostPage() {
         </div>
 
         <div className="flex-1 rounded-xl border border-white/10 bg-card p-6">
-          <h2 className="mb-4 text-lg font-semibold text-white">Live Transcript</h2>
+          <h2 className="mb-4 text-lg font-semibold text-white">
+            {session.status === "ended" ? "Session Transcript" : "Live Transcript"}
+          </h2>
 
           <div className="mb-6 rounded-lg border border-white/5 bg-white/5 p-4">
             <p className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">
@@ -327,7 +381,11 @@ export default function HostPage() {
               )}
               {!interimText && segments.length === 0 && (
                 <p className="text-gray-600">
-                  {recording ? "Listening..." : "Start recording to see live transcript"}
+                  {session.status === "ended"
+                    ? "No speech was captured in this session. Click Restart Recording to try again."
+                    : recording
+                      ? "Listening..."
+                      : "Start recording to see live transcript"}
                 </p>
               )}
             </div>

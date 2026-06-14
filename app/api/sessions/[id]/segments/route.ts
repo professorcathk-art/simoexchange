@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSegments } from "@/lib/supabase";
 import { enrichSegmentsWithAudioUrl } from "@/lib/session-archive";
 
+export const dynamic = "force-dynamic";
+
 export async function GET(
   _request: NextRequest,
   { params }: { params: { id: string } }

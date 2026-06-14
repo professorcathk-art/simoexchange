@@ -108,6 +108,12 @@ export default function TranscriptPolishPanel({
         </button>
       )}
 
+      {!showGenerateButton && sessionId && !isProcessing && !isComplete && (
+        <p className="text-xs text-gray-500">
+          Record speech first, then generate an AI-polished bilingual transcript with download.
+        </p>
+      )}
+
       {isProcessing && (
         <div className="mb-3 space-y-2">
           <div className="flex items-center justify-between text-xs text-gray-400">

@@ -14,6 +14,8 @@ import { buildListenerUrl, ensureUrlScheme } from "../lib/qrcode";
 import { resolveSourceLanguage } from "../lib/detect-language";
 import { translate, isMetaTranslation } from "../lib/translate";
 import { generateTTS } from "../lib/tts";
+import { mergeSegments } from "../lib/segment-merge";
+import type { TranscriptSegment } from "../types";
 
 loadEnvConfig(process.cwd());
 
@@ -33,7 +35,7 @@ function fail(name: string, err: unknown) {
 }
 
 async function fetchJson(path: string, init?: RequestInit) {
-  const res = await fetch(`${BASE}${path}`, init);
+  const res = await fetch(`${BASE}${path}`, { cache: "no-store", ...init });
   const text = await res.text();
   let json: unknown = null;
   try {
@@ -777,6 +779,91 @@ async function checkSegmentUpdateAudio(sessionId: string) {
   });
 }
 
+async function checkTranscriptPersistenceAfterEnd(sessionId: string) {
+  console.log("\n[10c] Transcript persistence after end session");
+
+  try {
+    const localOnly: TranscriptSegment[] = [
+      {
+        id: "local-seg-1",
+        session_id: sessionId,
+        seq_no: 99,
+        source_text: "in-memory transcript line",
+        is_final: true,
+        translated_text: "内存中的翻译",
+        audio_base64: null,
+        speaker_id: null,
+        created_at: new Date().toISOString(),
+      },
+    ];
+    const merged = mergeSegments(localOnly, []);
+    if (merged.length !== 1 || merged[0].source_text !== "in-memory transcript line") {
+      throw new Error("mergeSegments wiped local segments when DB returned empty");
+    }
+    ok("mergeSegments keeps in-memory transcript when DB fetch is empty");
+  } catch (err) {
+    fail("mergeSegments", err);
+  }
+
+  try {
+    const { res, json } = await fetchJson(`/api/sessions/${sessionId}/segments`);
+    if (res.status !== 200) throw new Error(`status ${res.status}`);
+    let segments = json as TranscriptSegment[];
+    if (segments.length === 0) {
+      const sb = createClient(
+        process.env.SUPABASE_URL!,
+        process.env.SUPABASE_ANON_KEY!
+      );
+      const { data: inserted, error: insertErr } = await sb
+        .from("transcript_segments")
+        .insert({
+          session_id: sessionId,
+          seq_no: 1,
+          source_text: "Health check persisted segment",
+          is_final: true,
+        })
+        .select("id");
+      if (insertErr) throw insertErr;
+      if (!inserted?.length) throw new Error("segment insert returned no rows");
+      const { res: res2, json: json2 } = await fetchJson(
+        `/api/sessions/${sessionId}/segments?ts=${Date.now()}`
+      );
+      if (res2.status !== 200) throw new Error(`status ${res2.status}`);
+      segments = json2 as TranscriptSegment[];
+      if (segments.length === 0) throw new Error("segments API returned empty after insert");
+    }
+    ok(`GET segments before end → ${segments.length} segment(s)`);
+  } catch (err) {
+    fail("segments before end", err);
+    return;
+  }
+
+  try {
+    const { res } = await fetchJson(`/api/sessions/${sessionId}/status`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "ended" }),
+    });
+    if (res.status !== 200) throw new Error(`status ${res.status}`);
+    ok("PATCH status → ended");
+  } catch (err) {
+    fail("end session for persistence", err);
+    return;
+  }
+
+  try {
+    const { res, json } = await fetchJson(`/api/sessions/${sessionId}/segments`);
+    if (res.status !== 200) throw new Error(`status ${res.status}`);
+    const after = json as TranscriptSegment[];
+    if (after.length === 0) {
+      throw new Error("segments disappeared from API after session ended");
+    }
+    ok(`GET segments after end → ${after.length} segment(s) still available`);
+  } catch (err) {
+    fail("segments after end", err);
+  }
+}
+
 async function checkListenerChannel(sessionId: string) {
   console.log("\n[10] Listener Socket.io channel");
   return new Promise<void>((resolve) => {
@@ -863,6 +950,7 @@ async function main() {
     await checkAudioWebSocket(sessionId);
     await checkListenerChannel(sessionId);
     await checkSegmentUpdateAudio(sessionId);
+    await checkTranscriptPersistenceAfterEnd(sessionId);
     await checkGlossaryAndTranscript(sessionId);
     await checkDeleteSession(sessionId);
   }

@@ -68,7 +68,9 @@ export default function ListenPage() {
   );
 
   const fetchSegments = useCallback(async () => {
-    const res = await fetch(`/api/sessions/${sessionId}/segments`);
+    const res = await fetch(`/api/sessions/${sessionId}/segments`, {
+      cache: "no-store",
+    });
     if (!res.ok) return;
     const data: Segment[] = await res.json();
     setSegments(data);
@@ -77,8 +79,8 @@ export default function ListenPage() {
 
   useEffect(() => {
     Promise.all([
-      fetch(`/api/sessions/${sessionId}`),
-      fetch(`/api/sessions/${sessionId}/segments`),
+      fetch(`/api/sessions/${sessionId}`, { cache: "no-store" }),
+      fetch(`/api/sessions/${sessionId}/segments`, { cache: "no-store" }),
     ])
       .then(async ([sessionRes, segmentsRes]) => {
         if (!sessionRes.ok) throw new Error("Session not found");
