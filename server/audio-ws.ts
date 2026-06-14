@@ -424,13 +424,6 @@ export async function setupAudioWebSocket(
     console.error("WebSocket error:", err);
     cleanupConnection(ws);
   });
-
-  // Legacy clients without config: auto-start after short grace period.
-  setTimeout(() => {
-    if (!conn.configReceived && !conn.deepgramReady && !conn.deepgramConnecting) {
-      void startDeepgramSession(ws, conn);
-    }
-  }, 1500);
 }
 
 function cleanupConnection(ws: WebSocket): void {

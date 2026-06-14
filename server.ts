@@ -42,6 +42,7 @@ app.prepare().then(() => {
     cors: { origin: "*", methods: ["GET", "POST"] },
     path: "/socket.io",
     maxHttpBufferSize: 5e6,
+    perMessageDeflate: false,
   });
 
   setIO(io);
@@ -55,7 +56,11 @@ app.prepare().then(() => {
     });
   });
 
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({
+    noServer: true,
+    // Railway edge proxy + permessage-deflate breaks audio WS (RSV1 must be clear)
+    perMessageDeflate: false,
+  });
 
   httpServer.on("upgrade", (request, socket, head) => {
     const { pathname, query } = parse(request.url!, true);
