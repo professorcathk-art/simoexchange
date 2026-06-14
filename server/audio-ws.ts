@@ -9,6 +9,7 @@ import {
 } from "@/lib/supabase";
 import { getDominantSpeaker } from "@/lib/speakers";
 import { resolveSourceLanguage } from "@/lib/detect-language";
+import { loadGlossaryPrompt } from "@/lib/glossary";
 import { translate } from "@/lib/translate";
 import { generateTTS } from "@/lib/tts";
 import {
@@ -290,7 +291,8 @@ async function processFinalTranscript(
 
   try {
     const sourceLang = resolveSourceLanguage(text, words, sessionSourceLang);
-    translatedText = await translate(text, targetLang, sourceLang);
+    const glossaryPrompt = await loadGlossaryPrompt(sourceLang, targetLang);
+    translatedText = await translate(text, targetLang, sourceLang, glossaryPrompt);
     if (!translatedText) translatedText = "[Translation unavailable]";
     if (translatedText !== "[Translation unavailable]") {
       trackTranslation(sessionId, text.length);

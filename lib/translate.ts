@@ -51,21 +51,26 @@ function getTranslationClients(): Array<{ client: OpenAI; label: string }> {
   return clients;
 }
 
-function buildSystemPrompt(targetLang: LangCode, sourceLang?: LangCode): string {
+function buildSystemPrompt(
+  targetLang: LangCode,
+  sourceLang?: LangCode,
+  glossaryPrompt?: string
+): string {
   const target = langNames[targetLang];
+  const glossaryBlock = glossaryPrompt ? `\n\n${glossaryPrompt}` : "";
 
   if (sourceLang && sourceLang !== targetLang) {
     return `${STRICT_RULES}
 
 Translate from ${langNames[sourceLang]} into ${target}.
-Output language: ${target} only.`;
+Output language: ${target} only.${glossaryBlock}`;
   }
 
   return `${STRICT_RULES}
 
 The speaker may use English, Mandarin Chinese, Japanese, Korean, or a mix.
 Detect the source language and translate into ${target}.
-Output language: ${target} only.`;
+Output language: ${target} only.${glossaryBlock}`;
 }
 
 const META_PATTERNS = [
@@ -173,7 +178,8 @@ async function callTranslate(
 export async function translate(
   text: string,
   targetLang: LangCode,
-  sourceLang?: LangCode
+  sourceLang?: LangCode,
+  glossaryPrompt?: string
 ): Promise<string> {
   const trimmed = text.trim();
   if (!trimmed) return "";
@@ -184,14 +190,17 @@ export async function translate(
 
   let result = await callTranslate(
     trimmed,
-    buildSystemPrompt(targetLang, sourceLang)
+    buildSystemPrompt(targetLang, sourceLang, glossaryPrompt)
   );
 
   if (
     isMetaTranslation(result) ||
     looksLikeUntranslated(trimmed, result, targetLang)
   ) {
-    result = await callTranslate(trimmed, buildSystemPrompt(targetLang, undefined));
+    result = await callTranslate(
+      trimmed,
+      buildSystemPrompt(targetLang, undefined, glossaryPrompt)
+    );
   }
 
   if (

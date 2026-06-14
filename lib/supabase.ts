@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
-import type { Session, TranscriptSegment } from "@/types";
+import type { Session, TranscriptSegment, GlossaryTerm, TranscriptJob } from "@/types";
 
 let supabaseInstance: SupabaseClient | null = null;
 
@@ -15,6 +15,24 @@ export function getSupabase(): SupabaseClient {
 
   supabaseInstance = createClient(url, key);
   return supabaseInstance;
+}
+
+const MIGRATION_004_HINT =
+  "run supabase/migrations/004_glossary_and_transcript_jobs.sql";
+
+function isMissingTableError(
+  error: { code?: string; message?: string },
+  table: string
+): boolean {
+  return (
+    error.code === "42P01" ||
+    error.code === "PGRST205" ||
+    Boolean(error.message?.includes(table))
+  );
+}
+
+function missingTableError(table: string): Error {
+  return new Error(`${table} table missing — ${MIGRATION_004_HINT}`);
 }
 
 export async function listSessions(): Promise<Session[]> {
@@ -157,5 +175,180 @@ export async function updateSegmentTranslation(
     .single();
 
   if (error) throw error;
+  return data;
+}
+
+export async function getGlossaryTerms(
+  sourceLang?: string,
+  targetLang?: string
+): Promise<GlossaryTerm[]> {
+  const { data, error } = await getSupabase()
+    .from("glossary_terms")
+    .select("*")
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    if (isMissingTableError(error, "glossary_terms")) {
+      throw missingTableError("glossary_terms");
+    }
+    throw error;
+  }
+
+  const terms = (data ?? []) as GlossaryTerm[];
+  if (!sourceLang && !targetLang) return terms;
+
+  return terms.filter((t) => {
+    const srcOk = t.source_lang === "*" || !sourceLang || t.source_lang === sourceLang;
+    const tgtOk = t.target_lang === "*" || !targetLang || t.target_lang === targetLang;
+    return srcOk && tgtOk;
+  });
+}
+
+export async function createGlossaryTerm(
+  sourceTerm: string,
+  targetTerm: string,
+  sourceLang: string,
+  targetLang: string,
+  notes?: string
+): Promise<GlossaryTerm> {
+  const { data, error } = await getSupabase()
+    .from("glossary_terms")
+    .insert({
+      source_term: sourceTerm,
+      target_term: targetTerm,
+      source_lang: sourceLang,
+      target_lang: targetLang,
+      notes: notes ?? null,
+    })
+    .select()
+    .single();
+
+  if (error) {
+    if (isMissingTableError(error, "glossary_terms")) {
+      throw missingTableError("glossary_terms");
+    }
+    throw error;
+  }
+  return data;
+}
+
+export async function deleteGlossaryTerm(id: string): Promise<void> {
+  const { data, error } = await getSupabase()
+    .from("glossary_terms")
+    .delete()
+    .eq("id", id)
+    .select("id");
+
+  if (error) throw error;
+  if (!data?.length) throw new Error("Glossary term not found");
+}
+
+export async function createTranscriptJob(
+  job: {
+    session_id: string | null;
+    job_type: TranscriptJob["job_type"];
+    status: TranscriptJob["status"];
+    progress_percent: number;
+    progress_message: string;
+    source_lang: TranscriptJob["source_lang"];
+    target_lang: TranscriptJob["target_lang"];
+    input_text: string | null;
+    result_text?: string | null;
+    error_message?: string | null;
+    completed_at?: string | null;
+  }
+): Promise<TranscriptJob> {
+  const { data, error } = await getSupabase()
+    .from("transcript_jobs")
+    .insert({
+      session_id: job.session_id,
+      job_type: job.job_type,
+      status: job.status,
+      progress_percent: job.progress_percent,
+      progress_message: job.progress_message,
+      source_lang: job.source_lang,
+      target_lang: job.target_lang,
+      input_text: job.input_text,
+      result_text: job.result_text ?? null,
+      error_message: job.error_message ?? null,
+      completed_at: job.completed_at ?? null,
+    })
+    .select()
+    .single();
+
+  if (error) {
+    if (isMissingTableError(error, "transcript_jobs")) {
+      throw missingTableError("transcript_jobs");
+    }
+    throw error;
+  }
+  return data;
+}
+
+export async function getTranscriptJob(id: string): Promise<TranscriptJob | null> {
+  const { data, error } = await getSupabase()
+    .from("transcript_jobs")
+    .select("*")
+    .eq("id", id)
+    .single();
+
+  if (error) {
+    if (error.code === "PGRST116") return null;
+    if (isMissingTableError(error, "transcript_jobs")) {
+      throw missingTableError("transcript_jobs");
+    }
+    throw error;
+  }
+  return data;
+}
+
+export async function getLatestSessionTranscriptJob(
+  sessionId: string
+): Promise<TranscriptJob | null> {
+  const { data, error } = await getSupabase()
+    .from("transcript_jobs")
+    .select("*")
+    .eq("session_id", sessionId)
+    .eq("job_type", "session_polish")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    if (isMissingTableError(error, "transcript_jobs")) {
+      throw missingTableError("transcript_jobs");
+    }
+    throw error;
+  }
+  return data;
+}
+
+export async function updateTranscriptJob(
+  id: string,
+  updates: Partial<
+    Pick<
+      TranscriptJob,
+      | "status"
+      | "progress_percent"
+      | "progress_message"
+      | "result_text"
+      | "error_message"
+      | "completed_at"
+    >
+  >
+): Promise<TranscriptJob> {
+  const { data, error } = await getSupabase()
+    .from("transcript_jobs")
+    .update(updates)
+    .eq("id", id)
+    .select()
+    .single();
+
+  if (error) {
+    if (isMissingTableError(error, "transcript_jobs")) {
+      throw missingTableError("transcript_jobs");
+    }
+    throw error;
+  }
   return data;
 }

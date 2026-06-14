@@ -13,6 +13,7 @@ import QRCodeDisplay from "@/components/QRCodeDisplay";
 import TranscriptSegment, { InterimTranscript } from "@/components/TranscriptSegment";
 import VadStateIndicator from "@/components/VadStateIndicator";
 import ApiUsagePanel from "@/components/ApiUsagePanel";
+import TranscriptPolishPanel from "@/components/TranscriptPolishPanel";
 import { useHostRecording } from "@/hooks/useHostRecording";
 
 export default function HostPage() {
@@ -262,6 +263,13 @@ export default function HostPage() {
               End Session
             </button>
           </div>
+
+          {session.status === "ended" && segments.length > 0 && (
+            <TranscriptPolishPanel
+              sessionId={sessionId}
+              title="Professional Transcript"
+            />
+          )}
 
           <ApiUsagePanel usage={apiUsage} lowPowerMode={lowPowerMode} />
           <QRCodeDisplay sessionId={sessionId} />

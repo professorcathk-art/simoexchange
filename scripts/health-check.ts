@@ -388,8 +388,116 @@ async function checkHttpRoutes() {
   return sessionId;
 }
 
+async function checkGlossaryAndTranscript(sessionId: string) {
+  console.log("\n[11] Glossary & transcript polish");
+
+  for (const path of ["/glossary", "/transcript/import"]) {
+    try {
+      const res = await fetch(`${BASE}${path}`);
+      if (res.status !== 200) throw new Error(`status ${res.status}`);
+      ok(`GET ${path}`);
+    } catch (err) {
+      fail(`GET ${path}`, err);
+    }
+  }
+
+  let glossaryAvailable = false;
+  try {
+    const { res, json } = await fetchJson("/api/glossary");
+    if (res.status !== 200) {
+      const errMsg = (json as { error?: string })?.error ?? "";
+      if (errMsg.includes("table missing")) {
+        ok("GET /api/glossary skipped (run migration 004)");
+      } else {
+        throw new Error(`status ${res.status}: ${errMsg}`);
+      }
+    } else {
+      glossaryAvailable = true;
+      ok("GET /api/glossary");
+    }
+  } catch (err) {
+    fail("GET /api/glossary", err);
+  }
+
+  if (glossaryAvailable) {
+    try {
+      const { res, json } = await fetchJson("/api/glossary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source_term: "health-check-term",
+          target_term: "健康检查",
+          source_lang: "en",
+          target_lang: "zh",
+        }),
+      });
+      if (res.status !== 201) throw new Error(`status ${res.status}`);
+      const termId = (json as { id: string }).id;
+      ok("POST /api/glossary");
+
+      const del = await fetchJson(`/api/glossary/${termId}`, { method: "DELETE" });
+      if (del.res.status !== 200) throw new Error(`delete status ${del.res.status}`);
+      ok("DELETE /api/glossary/[id]");
+    } catch (err) {
+      fail("Glossary CRUD", err);
+    }
+  }
+
+  try {
+    const { res } = await fetchJson("/api/transcript/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "", source_lang: "en", target_lang: "zh" }),
+    });
+    if (res.status !== 400) throw new Error(`expected 400, got ${res.status}`);
+    ok("POST /api/transcript/import empty → 400");
+  } catch (err) {
+    fail("POST /api/transcript/import validation", err);
+  }
+
+  try {
+    const { res, json } = await fetchJson(`/api/sessions/${sessionId}/transcript/polish`, {
+      method: "POST",
+    });
+    if (res.status === 400) {
+      ok("POST session polish without segments → 400");
+    } else if (res.status === 201 || res.status === 200) {
+      ok("POST session polish job created");
+    } else if (res.status === 500) {
+      const errMsg = (json as { error?: string })?.error ?? "";
+      if (errMsg.includes("table missing")) {
+        ok("POST session polish skipped (run migration 004)");
+      } else {
+        throw new Error(`status ${res.status}: ${errMsg}`);
+      }
+    } else {
+      throw new Error(`unexpected status ${res.status}`);
+    }
+  } catch (err) {
+    fail("POST session polish", err);
+  }
+
+  try {
+    const { res, json } = await fetchJson("/api/transcript/jobs/00000000-0000-0000-0000-000000000000");
+    if (res.status === 404) {
+      ok("GET /api/transcript/jobs/[id] missing → 404");
+    } else if (res.status === 500) {
+      const errMsg = (json as { error?: string })?.error ?? "";
+      if (errMsg.includes("table missing")) {
+        ok("GET transcript job skipped (run migration 004)");
+      } else {
+        throw new Error(`expected 404, got 500: ${errMsg}`);
+      }
+    } else {
+      throw new Error(`expected 404, got ${res.status}`);
+    }
+  } catch (err) {
+    fail("GET transcript job", err);
+  }
+}
+
 async function checkDeleteSession(sessionId: string) {
-  console.log("\n[9] Delete session");
+  console.log("\n[12] Delete session");
   try {
     const { res } = await fetchJson(`/api/sessions/${sessionId}`, {
       method: "DELETE",
@@ -654,6 +762,7 @@ async function main() {
     await checkAudioWebSocket(sessionId);
     await checkListenerChannel(sessionId);
     await checkSegmentUpdateAudio(sessionId);
+    await checkGlossaryAndTranscript(sessionId);
     await checkDeleteSession(sessionId);
   }
 

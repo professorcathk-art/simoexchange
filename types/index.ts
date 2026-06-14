@@ -52,3 +52,32 @@ export interface SessionStatusEvent {
   sessionId: string;
   status: SessionStatus;
 }
+
+export type TranscriptJobType = "session_polish" | "import_polish";
+export type TranscriptJobStatus = "pending" | "processing" | "completed" | "failed";
+
+export interface GlossaryTerm {
+  id: string;
+  source_term: string;
+  target_term: string;
+  source_lang: LangCode | "*";
+  target_lang: LangCode | "*";
+  notes: string | null;
+  created_at: string;
+}
+
+export interface TranscriptJob {
+  id: string;
+  session_id: string | null;
+  job_type: TranscriptJobType;
+  status: TranscriptJobStatus;
+  progress_percent: number;
+  progress_message: string;
+  source_lang: LangCode | null;
+  target_lang: LangCode | null;
+  input_text: string | null;
+  result_text: string | null;
+  error_message: string | null;
+  created_at: string;
+  completed_at: string | null;
+}

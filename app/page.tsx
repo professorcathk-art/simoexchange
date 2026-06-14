@@ -53,12 +53,26 @@ export default function HomePage() {
               Real-time speech translation for live events
             </p>
           </div>
-          <Link
-            href="/session/new"
-            className="rounded-lg bg-accent px-5 py-2.5 text-sm font-semibold text-black transition-opacity hover:opacity-90"
-          >
-            Create New Session
-          </Link>
+          <div className="flex flex-wrap items-center gap-3">
+            <Link
+              href="/transcript/import"
+              className="rounded-lg border border-white/15 px-4 py-2.5 text-sm text-gray-300 hover:border-accent/40 hover:text-accent"
+            >
+              Import Transcript
+            </Link>
+            <Link
+              href="/glossary"
+              className="rounded-lg border border-white/15 px-4 py-2.5 text-sm text-gray-300 hover:border-accent/40 hover:text-accent"
+            >
+              Glossary
+            </Link>
+            <Link
+              href="/session/new"
+              className="rounded-lg bg-accent px-5 py-2.5 text-sm font-semibold text-black transition-opacity hover:opacity-90"
+            >
+              Create New Session
+            </Link>
+          </div>
         </div>
 
         {loading && (
