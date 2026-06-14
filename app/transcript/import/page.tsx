@@ -57,8 +57,8 @@ export default function TranscriptImportPage() {
   return (
     <main className="min-h-screen bg-background">
       <div className="mx-auto max-w-3xl px-4 py-10">
-        <Link href="/" className="text-sm text-gray-400 hover:text-accent">
-          ← Home
+        <Link href="/app" className="text-sm text-gray-400 hover:text-accent">
+          ← Dashboard
         </Link>
         <h1 className="mt-4 text-2xl font-bold text-white">Import & Polish Transcript</h1>
         <p className="mt-2 text-sm text-gray-400">

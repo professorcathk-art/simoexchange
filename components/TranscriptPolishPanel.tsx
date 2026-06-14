@@ -121,7 +121,7 @@ export default function TranscriptPolishPanel({
             />
           </div>
           <p className="text-xs text-amber-400/90">
-            AI is polishing your transcript — this may take 1–3 minutes for long sessions.
+            AI is polishing your transcript — short sessions usually finish in 15–40 seconds.
           </p>
         </div>
       )}

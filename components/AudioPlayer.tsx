@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useRef } from "react";
+import { toAudioPlaySrc } from "@/lib/segment-audio";
 
 export function useAudioPlayer() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -18,11 +19,11 @@ export function useAudioPlayer() {
     }).catch(() => {});
   }, []);
 
-  const play = useCallback((audioBase64: string, volume = 1) => {
+  const play = useCallback((audioSrc: string, volume = 1) => {
     if (audioRef.current) {
       audioRef.current.pause();
     }
-    const audio = new Audio(`data:audio/mp3;base64,${audioBase64}`);
+    const audio = new Audio(toAudioPlaySrc(audioSrc));
     audio.volume = volume;
     audioRef.current = audio;
     audio.play().catch(console.error);

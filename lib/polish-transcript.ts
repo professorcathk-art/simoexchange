@@ -5,6 +5,7 @@ import type { GlossaryTerm } from "@/types";
 import { estimateChunkCount, splitIntoChunks } from "@/lib/transcript-format";
 
 const POLISH_TIMEOUT_MS = 90_000;
+const FAST_POLISH_MAX_CHARS = 8_000;
 
 const langNames: Record<LangCode, string> = {
   en: "English",
@@ -47,13 +48,23 @@ function buildPolishSystemPrompt(
   glossary: GlossaryTerm[],
   isChunk: boolean,
   chunkIndex: number,
-  totalChunks: number
+  totalChunks: number,
+  fast = false
 ): string {
   const glossaryBlock = formatGlossaryForPrompt(glossary);
   const chunkNote =
     totalChunks > 1
       ? `\nThis is part ${chunkIndex + 1} of ${totalChunks} of a longer transcript. Keep speaker labels consistent across parts.`
       : "";
+
+  if (fast) {
+    return `Polish this live transcript into a clean bilingual document (${langNames[sourceLang]} + ${langNames[targetLang]}).
+Keep all content. Label speakers (Speaker 1, Speaker 2). Fix punctuation only — do not summarize.
+${glossaryBlock ? `${glossaryBlock}\n` : ""}
+Format each line as:
+Speaker X (Original): ...
+Speaker X (Translated): ...`;
+  }
 
   return `You are a professional transcript editor and simultaneous interpretation archivist.
 
@@ -83,7 +94,8 @@ Segment 2
 
 async function callPolish(
   systemPrompt: string,
-  userContent: string
+  userContent: string,
+  maxTokens = 8000
 ): Promise<string> {
   const clients = getClients();
   if (clients.length === 0) {
@@ -101,7 +113,7 @@ async function callPolish(
             { role: "user", content: userContent },
           ],
           temperature: 0.2,
-          max_tokens: 8000,
+          max_tokens: maxTokens,
         }),
         POLISH_TIMEOUT_MS
       );
@@ -125,8 +137,9 @@ export async function polishTranscript(
 ): Promise<string> {
   const chunks = splitIntoChunks(rawText);
   const total = chunks.length;
+  const fastMode = rawText.length <= FAST_POLISH_MAX_CHARS && total === 1;
 
-  await onProgress?.(15, "Preparing transcript for AI polish...");
+  await onProgress?.(15, fastMode ? "Quick polish starting..." : "Preparing transcript for AI polish...");
 
   const polishedParts: string[] = [];
 
@@ -145,10 +158,15 @@ export async function polishTranscript(
       glossary,
       total > 1,
       i,
-      total
+      total,
+      fastMode
     );
 
-    const part = await callPolish(systemPrompt, chunks[i]);
+    const maxTokens = fastMode
+      ? Math.min(4000, Math.max(1200, Math.ceil(chunks[i].length * 1.5)))
+      : 8000;
+
+    const part = await callPolish(systemPrompt, chunks[i], maxTokens);
     polishedParts.push(part);
   }
 
@@ -171,6 +189,9 @@ ${formatGlossaryForPrompt(glossary)}`;
 
 export function getEstimatedProgressMessage(rawText: string): string {
   const chunks = estimateChunkCount(rawText);
+  if (rawText.length <= FAST_POLISH_MAX_CHARS && chunks === 1) {
+    return "Quick polish typically takes 15–40 seconds.";
+  }
   if (chunks === 1) return "AI polish typically takes 30–90 seconds.";
   return `Long transcript (${chunks} parts) — may take ${chunks * 45}s–${chunks * 90}s.`;
 }

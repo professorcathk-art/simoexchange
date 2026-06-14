@@ -9,6 +9,8 @@ export interface Session {
   status: SessionStatus;
   created_at: string;
   ended_at: string | null;
+  raw_recording_path?: string | null;
+  transcript_archive_path?: string | null;
 }
 
 export interface TranscriptSegment {
@@ -19,6 +21,8 @@ export interface TranscriptSegment {
   is_final: boolean;
   translated_text: string | null;
   audio_base64: string | null;
+  audio_storage_path?: string | null;
+  audio_url?: string | null;
   speaker_id: number | null;
   created_at: string;
 }

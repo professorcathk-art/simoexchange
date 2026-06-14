@@ -43,18 +43,23 @@ export default function HostPage() {
     startRecording,
     stopRecording,
     teardown,
+    getRawRecordingBlob,
   } = useHostRecording(sessionId);
 
+  const loadSegments = useCallback(async () => {
+    const segmentsRes = await fetch(`/api/sessions/${sessionId}/segments`);
+    if (segmentsRes.ok) setSegments(await segmentsRes.json());
+  }, [sessionId]);
+
   const loadSession = useCallback(async () => {
-    const [sessionRes, segmentsRes] = await Promise.all([
+    const [sessionRes] = await Promise.all([
       fetch(`/api/sessions/${sessionId}`),
-      fetch(`/api/sessions/${sessionId}/segments`),
+      loadSegments(),
     ]);
 
     if (!sessionRes.ok) throw new Error("Session not found");
     setSession(await sessionRes.json());
-    if (segmentsRes.ok) setSegments(await segmentsRes.json());
-  }, [sessionId]);
+  }, [sessionId, loadSegments]);
 
   useEffect(() => {
     loadSession()
@@ -127,6 +132,9 @@ export default function HostPage() {
       setSession((prev) =>
         prev ? { ...prev, status: data.status as Session["status"] } : prev
       );
+      if (data.status === "ended") {
+        void loadSegments();
+      }
     });
 
     socket.on("api_usage", (data: { usage: ApiUsageStats }) => {
@@ -140,7 +148,7 @@ export default function HostPage() {
       socket.off("session_status");
       socket.off("api_usage");
     };
-  }, [sessionId, setApiUsage]);
+  }, [sessionId, setApiUsage, loadSegments]);
 
   useEffect(() => {
     segmentsEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -163,8 +171,24 @@ export default function HostPage() {
   };
 
   const endSession = async () => {
+    const recordingBlob = getRawRecordingBlob();
     stopRecording();
+
+    if (recordingBlob && recordingBlob.size > 0) {
+      try {
+        const form = new FormData();
+        form.append("recording", recordingBlob, "host-recording.webm");
+        await fetch(`/api/sessions/${sessionId}/recording`, {
+          method: "POST",
+          body: form,
+        });
+      } catch (err) {
+        console.error("Recording upload failed:", err);
+      }
+    }
+
     await updateStatus("ended");
+    await loadSegments();
   };
 
   const displayError = pageError || recordingError;
@@ -191,7 +215,7 @@ export default function HostPage() {
     <main className="min-h-screen bg-background">
       <div className="mx-auto flex max-w-7xl flex-col gap-6 px-4 py-6 lg:flex-row">
         <div className="w-full shrink-0 space-y-6 rounded-xl border border-white/10 bg-card p-6 lg:w-80">
-          <Link href="/" className="text-sm text-gray-400 hover:text-accent">
+          <Link href="/app" className="text-sm text-gray-400 hover:text-accent">
             ← All sessions
           </Link>
 
@@ -263,6 +287,12 @@ export default function HostPage() {
               End Session
             </button>
           </div>
+
+          {session.status === "ended" && (
+            <p className="rounded-lg border border-green-500/20 bg-green-500/5 px-3 py-2 text-xs text-green-400">
+              Session ended — transcript saved to database
+            </p>
+          )}
 
           {session.status === "ended" && segments.length > 0 && (
             <TranscriptPolishPanel

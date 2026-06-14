@@ -8,9 +8,9 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "LiveTranslate — Real-time Speech Translation",
+  title: "SimoExchange — Real-time Speech Translation",
   description:
-    "Live speech translation with real-time captions and translated audio",
+    "Live multilingual interpretation with real-time captions, translated audio, and professional transcripts",
 };
 
 export default function RootLayout({

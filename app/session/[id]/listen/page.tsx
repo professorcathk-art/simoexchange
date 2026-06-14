@@ -53,13 +53,14 @@ export default function ListenPage() {
     (list: Segment[]) => {
       const ordered = [...list]
         .sort((a, b) => a.seq_no - b.seq_no)
-        .filter((s) => s.translated_text || s.audio_base64);
+        .filter((s) => s.translated_text || s.audio_base64 || s.audio_url);
       for (const seg of ordered) {
         registerSegment(
           seg.id,
           seg.translated_text,
           seg.audio_base64,
-          seg.seq_no
+          seg.seq_no,
+          seg.audio_url ?? null
         );
       }
     },
@@ -353,13 +354,16 @@ export default function ListenPage() {
                   segment={seg}
                   variant="listener"
                   showPlayButton={
-                    isSpeakableText(seg.translated_text) || !!seg.audio_base64
+                    isSpeakableText(seg.translated_text) ||
+                    !!seg.audio_base64 ||
+                    !!seg.audio_url
                   }
                   onPlay={() =>
                     replaySegment(
                       seg.id,
                       seg.translated_text,
-                      seg.audio_base64
+                      seg.audio_base64,
+                      seg.audio_url ?? null
                     )
                   }
                 />

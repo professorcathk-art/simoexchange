@@ -296,11 +296,69 @@ async function checkHttpRoutes() {
 
   try {
     const home = await fetch(`${BASE}/`);
+    const homeText = await home.text();
     if (home.status !== 200) throw new Error(`GET / → ${home.status}`);
-    ok(`GET / → ${home.status}`);
+    if (!homeText.includes("SimoExchange")) {
+      throw new Error("landing page missing SimoExchange branding");
+    }
+    ok(`GET / landing → ${home.status}`);
   } catch (err) {
     fail("GET /", err);
     return null;
+  }
+
+  try {
+    const contact = await fetch(`${BASE}/contact`);
+    if (contact.status !== 200) throw new Error(`status ${contact.status}`);
+    const text = await contact.text();
+    if (!text.includes("chris.lau@professor-cat.com")) {
+      throw new Error("contact email missing");
+    }
+    ok("GET /contact");
+  } catch (err) {
+    fail("GET /contact", err);
+  }
+
+  try {
+    const blocked = await fetch(`${BASE}/app`, { redirect: "manual" });
+    if (blocked.status !== 307 && blocked.status !== 308) {
+      throw new Error(`expected redirect from /app, got ${blocked.status}`);
+    }
+    ok("GET /app without auth → redirect");
+  } catch (err) {
+    fail("Auth gate /app", err);
+  }
+
+  try {
+    const authRes = await fetch(`${BASE}/api/auth/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: "mickey" }),
+    });
+    if (authRes.status !== 200) throw new Error(`auth status ${authRes.status}`);
+    const cookie = authRes.headers.get("set-cookie")?.split(";")[0] ?? "";
+    if (!cookie.includes("simo_access")) throw new Error("no auth cookie set");
+    const appRes = await fetch(`${BASE}/app`, {
+      headers: { Cookie: cookie },
+    });
+    if (appRes.status !== 200) throw new Error(`app status ${appRes.status}`);
+    ok("POST /api/auth/verify + GET /app");
+  } catch (err) {
+    fail("Auth verify", err);
+  }
+
+  try {
+    const badAuth = await fetchJson("/api/auth/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: "wrong" }),
+    });
+    if (badAuth.res.status !== 401) {
+      throw new Error(`expected 401, got ${badAuth.res.status}`);
+    }
+    ok("POST /api/auth/verify wrong password → 401");
+  } catch (err) {
+    fail("Auth verify rejection", err);
   }
 
   let sessionId: string | null = null;

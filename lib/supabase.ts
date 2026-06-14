@@ -114,7 +114,12 @@ export async function updateSessionStatus(
   return data;
 }
 
-export async function getSegments(sessionId: string): Promise<TranscriptSegment[]> {
+export async function getSegments(
+  sessionId: string,
+  options?: { includeAudio?: boolean }
+): Promise<TranscriptSegment[]> {
+  const includeAudio = options?.includeAudio ?? false;
+
   const { data, error } = await getSupabase()
     .from("transcript_segments")
     .select("*")
@@ -122,7 +127,9 @@ export async function getSegments(sessionId: string): Promise<TranscriptSegment[
     .order("seq_no", { ascending: true });
 
   if (error) throw error;
-  return data ?? [];
+  const segments = (data ?? []) as TranscriptSegment[];
+  if (includeAudio) return segments;
+  return segments.map((s) => ({ ...s, audio_base64: null }));
 }
 
 export async function getNextSeqNo(sessionId: string): Promise<number> {
@@ -162,15 +169,54 @@ export async function insertSegment(
 export async function updateSegmentTranslation(
   segmentId: string,
   translatedText: string,
-  audioBase64: string | null
+  audioBase64: string | null,
+  audioStoragePath: string | null = null
 ): Promise<TranscriptSegment> {
+  const updates: Record<string, string | null> = {
+    translated_text: translatedText,
+    audio_storage_path: audioStoragePath,
+  };
+  // Keep DB lean — store TTS in storage, not base64 column
+  if (!audioStoragePath) {
+    updates.audio_base64 = audioBase64;
+  } else {
+    updates.audio_base64 = null;
+  }
+
   const { data, error } = await getSupabase()
     .from("transcript_segments")
-    .update({
-      translated_text: translatedText,
-      audio_base64: audioBase64,
-    })
+    .update(updates)
     .eq("id", segmentId)
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+export async function updateSessionRecording(
+  sessionId: string,
+  rawRecordingPath: string
+): Promise<Session> {
+  const { data, error } = await getSupabase()
+    .from("sessions")
+    .update({ raw_recording_path: rawRecordingPath })
+    .eq("id", sessionId)
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+export async function updateSessionArchive(
+  sessionId: string,
+  fields: { transcript_archive_path?: string; raw_recording_path?: string }
+): Promise<Session> {
+  const { data, error } = await getSupabase()
+    .from("sessions")
+    .update(fields)
+    .eq("id", sessionId)
     .select()
     .single();
 

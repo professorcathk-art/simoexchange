@@ -10,6 +10,7 @@ import {
 import { getDominantSpeaker } from "@/lib/speakers";
 import { resolveSourceLanguage } from "@/lib/detect-language";
 import { loadGlossaryPrompt } from "@/lib/glossary";
+import { uploadBase64Audio } from "@/lib/storage";
 import { translate } from "@/lib/translate";
 import { generateTTS } from "@/lib/tts";
 import {
@@ -311,7 +312,24 @@ async function processFinalTranscript(
     console.error("TTS error:", err);
   }
 
-  await updateSegmentTranslation(segment.id, translatedText, audioBase64);
+  let audioStoragePath: string | null = null;
+  if (audioBase64) {
+    try {
+      audioStoragePath = await uploadBase64Audio(
+        `tts/${sessionId}/${segment.id}.mp3`,
+        audioBase64
+      );
+    } catch (err) {
+      console.error("TTS storage upload failed:", err);
+    }
+  }
+
+  await updateSegmentTranslation(
+    segment.id,
+    translatedText,
+    audioBase64,
+    audioStoragePath
+  );
 
   emitToSession(sessionId, "segment_update", {
     sessionId,

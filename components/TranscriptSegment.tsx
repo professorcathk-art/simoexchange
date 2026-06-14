@@ -2,6 +2,7 @@
 
 import type { TranscriptSegment as Segment } from "@/types";
 import { getSpeakerLabel, getSpeakerStyle } from "@/lib/speakers";
+import { resolveSegmentAudioSrc } from "@/lib/segment-audio";
 
 interface TranscriptSegmentProps {
   segment: Segment;
@@ -27,6 +28,8 @@ export default function TranscriptSegment({
   onPlay,
   variant = "listener",
 }: TranscriptSegmentProps) {
+  const audioSrc = resolveSegmentAudioSrc(segment);
+
   if (variant === "translation-only") {
     return (
       <div className="rounded-lg border border-white/5 bg-white/5 p-3">
@@ -36,10 +39,10 @@ export default function TranscriptSegment({
         <p className="text-sm text-accent">
           {segment.translated_text || "Translating..."}
         </p>
-        {showPlayButton && segment.audio_base64 && onPlay && (
+        {showPlayButton && audioSrc && onPlay && (
           <button
             type="button"
-            onClick={() => onPlay(segment.audio_base64!)}
+            onClick={() => onPlay(audioSrc)}
             className="mt-2 shrink-0 rounded p-1 text-accent hover:bg-accent/10"
             aria-label="Play audio"
           >
@@ -60,9 +63,9 @@ export default function TranscriptSegment({
         {segment.translated_text && (
           <div className="mt-2 flex items-start justify-between gap-2">
             <p className="text-sm text-accent">{segment.translated_text}</p>
-            {showPlayButton && segment.audio_base64 && onPlay && (
+            {showPlayButton && audioSrc && onPlay && (
               <button
-                onClick={() => onPlay(segment.audio_base64!)}
+                onClick={() => onPlay(audioSrc)}
                 className="shrink-0 rounded p-1 text-accent hover:bg-accent/10"
                 aria-label="Play audio"
               >

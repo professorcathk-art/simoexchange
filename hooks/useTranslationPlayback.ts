@@ -17,11 +17,13 @@ import {
 interface SegmentAudio {
   text: string;
   audioBase64: string | null;
+  audioUrl: string | null;
   seqNo: number;
 }
 
 interface Mp3QueueItem {
-  b64: string;
+  b64: string | null;
+  url: string | null;
   text: string;
 }
 
@@ -97,8 +99,15 @@ export function useTranslationPlayback(targetLang: LangCode) {
     setLastPlaySource("mp3");
 
     revokeBlob();
-    const url = base64ToBlobUrl(item.b64);
-    currentBlobUrlRef.current = url;
+    const url = item.url ?? (item.b64 ? base64ToBlobUrl(item.b64) : null);
+    if (!url) {
+      playingRef.current = false;
+      setIsPlaying(false);
+      if (isSpeakableText(item.text)) speakFallback(item.text);
+      playNextMp3();
+      return;
+    }
+    currentBlobUrlRef.current = item.url ? null : url;
 
     audio.src = url;
     audio.volume = volumeRef.current;
@@ -139,11 +148,15 @@ export function useTranslationPlayback(targetLang: LangCode) {
       const pending = pendingRef.current.get(segmentId);
       if (!pending) return;
 
-      const { text, audioBase64 } = pending;
+      const { text, audioBase64, audioUrl } = pending;
 
-      if (audioBase64 && !playedMp3IdsRef.current.has(segmentId)) {
+      if ((audioBase64 || audioUrl) && !playedMp3IdsRef.current.has(segmentId)) {
         playedMp3IdsRef.current.add(segmentId);
-        mp3QueueRef.current.push({ b64: audioBase64, text });
+        mp3QueueRef.current.push({
+          b64: audioBase64,
+          url: audioUrl,
+          text,
+        });
         updateQueueLength();
         playNextMp3();
         return;
@@ -151,6 +164,7 @@ export function useTranslationPlayback(targetLang: LangCode) {
 
       if (
         !audioBase64 &&
+        !audioUrl &&
         isSpeakableText(text) &&
         !playedSpeechIdsRef.current.has(segmentId)
       ) {
@@ -166,12 +180,14 @@ export function useTranslationPlayback(targetLang: LangCode) {
       segmentId: string,
       text: string | null,
       audioBase64: string | null,
-      seqNo = 0
+      seqNo = 0,
+      audioUrl: string | null = null
     ) => {
       const existing = pendingRef.current.get(segmentId);
       pendingRef.current.set(segmentId, {
         text: text ?? existing?.text ?? "",
         audioBase64: audioBase64 ?? existing?.audioBase64 ?? null,
+        audioUrl: audioUrl ?? existing?.audioUrl ?? null,
         seqNo: seqNo || existing?.seqNo || 0,
       });
       tryPlaySegment(segmentId);
@@ -231,14 +247,23 @@ export function useTranslationPlayback(targetLang: LangCode) {
   }, [flushAllPending, playNextMp3]);
 
   const replaySegment = useCallback(
-    (_segmentId: string, text: string | null, audioBase64: string | null) => {
+    (
+      _segmentId: string,
+      text: string | null,
+      audioBase64: string | null,
+      audioUrl: string | null = null
+    ) => {
       if (!unlockedRef.current) enableAudio();
 
       playingRef.current = false;
       speechQueueRef.current?.stop();
 
-      if (audioBase64) {
-        mp3QueueRef.current.unshift({ b64: audioBase64, text: text ?? "" });
+      if (audioBase64 || audioUrl) {
+        mp3QueueRef.current.unshift({
+          b64: audioBase64,
+          url: audioUrl,
+          text: text ?? "",
+        });
         updateQueueLength();
         playNextMp3();
         return;

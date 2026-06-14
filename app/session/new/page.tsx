@@ -46,7 +46,7 @@ export default function NewSessionPage() {
   return (
     <main className="min-h-screen bg-background">
       <div className="mx-auto max-w-lg px-4 py-10">
-        <Link href="/" className="text-sm text-gray-400 hover:text-accent">
+        <Link href="/app" className="text-sm text-gray-400 hover:text-accent">
           ← Back to sessions
         </Link>
 

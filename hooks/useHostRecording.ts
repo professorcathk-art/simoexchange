@@ -35,6 +35,7 @@ export function useHostRecording(sessionId: string) {
   const webmHeaderRef = useRef<ArrayBuffer | null>(null);
   const preSpeechChunksRef = useRef<ArrayBuffer[]>([]);
   const pendingChunksRef = useRef<ArrayBuffer[]>([]);
+  const rawRecordingChunksRef = useRef<Blob[]>([]);
   const hangoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const vadFailedRef = useRef(false);
 
@@ -169,6 +170,7 @@ export function useHostRecording(sessionId: string) {
     webmHeaderRef.current = null;
     preSpeechChunksRef.current = [];
     pendingChunksRef.current = [];
+    rawRecordingChunksRef.current = [];
     setRecording(false);
     setWsStatus("idle");
     setVadState("idle");
@@ -180,6 +182,7 @@ export function useHostRecording(sessionId: string) {
       setWsStatus("connecting");
       vadFailedRef.current = false;
       webmHeaderRef.current = null;
+      rawRecordingChunksRef.current = [];
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -236,6 +239,7 @@ export function useHostRecording(sessionId: string) {
 
         recorder.ondataavailable = async (e) => {
           if (e.data.size === 0) return;
+          rawRecordingChunksRef.current.push(e.data);
           const buf = await e.data.arrayBuffer();
           if (!gotHeader) {
             webmHeaderRef.current = buf;
@@ -306,6 +310,15 @@ export function useHostRecording(sessionId: string) {
     teardown();
   }, [sendWsJson, teardown]);
 
+  const getRawRecordingBlob = useCallback((): Blob | null => {
+    if (rawRecordingChunksRef.current.length === 0) return null;
+    const mime =
+      mediaRecorderRef.current?.mimeType ||
+      rawRecordingChunksRef.current[0]?.type ||
+      "audio/webm";
+    return new Blob(rawRecordingChunksRef.current, { type: mime });
+  }, []);
+
   return {
     recording,
     wsStatus,
@@ -319,5 +332,6 @@ export function useHostRecording(sessionId: string) {
     startRecording,
     stopRecording,
     teardown,
+    getRawRecordingBlob,
   };
 }
